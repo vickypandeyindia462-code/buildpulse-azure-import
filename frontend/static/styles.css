@@ -1,0 +1,69 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+
+:root{
+  --ink: #1D2433;
+  --muted: #718097;
+  --line: #E7EBF2;
+  --page-bg: #F7F8FB;
+  --navy: #111B2C;
+  --navy-selected: #23304A;
+  --primary: #456BF5;
+  --primary-soft: #EEF2FF;
+  --critical: #E6535D;
+  --critical-soft: #FFF0F0;
+  --warning: #D88D21;
+  --warning-soft: #FFF7E8;
+  --success: #15966C;
+  --success-soft: #E9F8F1;
+}
+
+body {
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+  background: var(--page-bg) !important;
+}
+
+/* Top bar */
+.bp-topbar{
+  background: white;
+  border-bottom: 1px solid var(--line);
+  padding: 18px 32px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+  font-family: 'Manrope', 'DM Sans';
+}
+.bp-topbar .title{font-weight:700; font-size:18px; color:var(--ink)}
+.bp-topbar .right-controls{display:flex;gap:12px;align-items:center}
+.bp-ask-btn{background:var(--primary);color:white;padding:8px 12px;border-radius:6px;border:none;font-weight:600}
+
+/* Sidebar */
+.bp-shell{display:flex;gap:20px}
+.bp-sidebar{
+  width:252px;
+  background:var(--navy);
+  color: #E7EEF9;
+  padding:24px 18px;
+  height: calc(100vh - 72px);
+  box-sizing:border-box;
+  border-right: 1px solid rgba(255,255,255,0.02);
+}
+.bp-sidebar .brand{font-weight:700;font-family:'Manrope';font-size:18px;margin-bottom:18px}
+.bp-nav{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.bp-nav .nav-item{padding:10px 12px;border-radius:6px;color: #D7E2FF;text-decoration:none;display:flex;align-items:center;gap:10px}
+.bp-nav .nav-item.selected{background:var(--navy-selected);color:white}
+.bp-footer{position:absolute;bottom:20px;left:18px}
+
+/* Content container */
+.bp-content{flex:1;padding:22px 43px;background:var(--page-bg);min-height:calc(100vh - 72px)}
+.card{background:white;border:1px solid var(--line);border-radius:8px;padding:16px}
+.kpi-row{display:flex;gap:16px}
+.kpi{flex:1;background:white;border:1px solid var(--line);border-radius:8px;padding:12px}
+.kpi .label{font-family:'DM Mono';font-size:10px;color:var(--muted);text-transform:uppercase}
+.kpi .value{font-family:'Manrope';font-size:28px;color:var(--ink);font-weight:700}
+
+/* small helpers */
+.evidence-expander > summary{font-weight:600}
+
+/* Streamlit-specific tweaks */
+.stApp .block-container{padding-top:0rem}
