@@ -1,0 +1,6 @@
+[
+  {"document_id":"doc-001","title":"Loan API Design","content":"This document describes the Loan API design, endpoints, and data models.","system_name":"Loan Service","owner_email":"alice@acme.com","tags":["api","loan"],"source":"confluence","created_at":"2026-09-10T12:00:00Z"},
+  {"document_id":"doc-002","title":"KYC Policy","content":"KYC pipeline and policy for customer verification.","system_name":"KYC Pipeline","owner_email":"bob@acme.com","tags":["compliance","pii"],"source":"sharepoint","created_at":"2026-09-08T09:15:00Z"},
+  {"document_id":"doc-003","title":"Payments Integration","content":"Guide for Payments Gateway integration and callbacks.","system_name":"Payments Gateway","owner_email":"carmen@acme.com","tags":["payments"],"source":"docs","created_at":"2026-09-11T15:30:00Z"},
+  {"document_id":"doc-004","title":"Incident Runbook","content":"Steps to handle production incidents for Loan Service.","system_name":"Loan Service","owner_email":"alice@acme.com","tags":["runbook","incident"],"source":"wiki","created_at":"2026-08-30T07:20:00Z"}
+]

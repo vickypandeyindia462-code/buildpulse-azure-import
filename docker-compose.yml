@@ -1,0 +1,29 @@
+version: '3.8'
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: buildpulse
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: buildpulse
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build: ./backend
+    env_file: .env.example
+    depends_on: [postgres]
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    env_file: .env.example
+    depends_on: [api]
+    ports:
+      - "8501:8501"
+
+volumes:
+  pgdata:

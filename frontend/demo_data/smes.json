@@ -1,0 +1,5 @@
+[
+  {"system_name": "Loan Service", "owner_name": "Alice Smith", "owner_team": "Lending", "owner_email": "alice@acme.com", "expertise_tags": ["loan", "eligibility"]},
+  {"system_name": "KYC Pipeline", "owner_name": "Bob Chen", "owner_team": "Compliance", "owner_email": "bob@acme.com", "expertise_tags": ["kyc", "pii"]},
+  {"system_name": "Payments Gateway", "owner_name": "Carmen Diaz", "owner_team": "Payments", "owner_email": "carmen@acme.com", "expertise_tags": ["payments", "gateway"]}
+]

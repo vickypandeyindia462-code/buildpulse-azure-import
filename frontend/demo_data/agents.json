@@ -1,0 +1,6 @@
+[
+  {"agent": "ingestion", "status": "idle", "last_run": "2026-09-10", "last_duration": "12s"},
+  {"agent": "rag", "status": "idle", "last_run": "2026-09-11", "last_duration": "8s"},
+  {"agent": "security_check", "status": "idle", "last_run": "2026-09-12", "last_duration": "5s"},
+  {"agent": "sme_discovery", "status": "idle", "last_run": "2026-09-09", "last_duration": "20s"}
+]

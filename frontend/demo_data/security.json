@@ -1,0 +1,7 @@
+{
+  "issues": [
+    {"type": "PII", "match": "SSN-like", "context": "...411-22-3333...", "severity": "critical"},
+    {"type": "Secret", "match": "AWS_KEY", "context": "AKIA...", "severity": "major"}
+  ],
+  "summary": {"total_issues": 2}
+}

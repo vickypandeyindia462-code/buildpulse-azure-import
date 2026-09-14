@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+psycopg-binary
+alembic
+streamlit
+llama-index
+pgvector
+presidio-analyzer
+presidio-anonymizer
+python-dotenv
+requests
+pytest

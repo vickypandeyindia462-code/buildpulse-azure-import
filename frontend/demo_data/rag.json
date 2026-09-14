@@ -1,0 +1,7 @@
+{
+  "answer": "BuildPulse helps teams ingest docs, run RAG queries, and find SMEs.",
+  "sources": [
+    {"id": "doc1", "content": "BuildPulse: ingest and search"},
+    {"id": "doc2", "content": "RAG combines retrieval with LLMs"}
+  ]
+}
