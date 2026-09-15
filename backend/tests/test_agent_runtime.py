@@ -39,6 +39,12 @@ def test_greeting_is_natural_and_does_not_trigger_retrieval():
         assert result["sources"] == []
 
 
+def test_social_follow_up_does_not_trigger_knowledge_retrieval():
+    result = runtime().chat("How are you?", history=[{"role": "assistant", "content": "Hello!"}])
+    assert result["answer"].startswith("I’m ready to help")
+    assert result["sources"] == []
+
+
 def test_service_owner_answer_is_grounded_in_catalog():
     result = runtime().chat("Who owns the Payments API?")
     assert "Dev Shah" in result["answer"]

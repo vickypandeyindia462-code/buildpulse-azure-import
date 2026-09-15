@@ -12,6 +12,7 @@ import requests
 
 
 MAX_PAGE_CHARS = 80_000
+DEFAULT_PAGE_TITLES = {"overview", "getting started in confluence", "meeting notes"}
 
 
 def markdown_to_storage(text: str) -> str:
@@ -82,6 +83,8 @@ class ConfluenceClient:
         terms = set(re.findall(r"[a-z0-9_-]{3,}", query.lower()))
         ranked = []
         for page in self.pages():
+            if page["title"].strip().lower() in DEFAULT_PAGE_TITLES:
+                continue
             corpus = set(re.findall(r"[a-z0-9_-]{3,}", f"{page['title']} {page['content']}".lower()))
             overlap = len(terms & corpus)
             if not query.strip() or overlap:

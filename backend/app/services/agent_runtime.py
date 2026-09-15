@@ -180,9 +180,27 @@ class BuildPulseAgentRuntime:
     ]
 
     SOCIAL_MESSAGES = {
-        "hello", "hello!", "hi", "hi!", "hey", "hey!", "good morning",
-        "good afternoon", "good evening", "thanks", "thank you",
+        "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+        "thanks", "thank you", "how are you", "how are you doing", "how's it going",
+        "who are you", "what can you do", "bye", "goodbye",
     }
+
+    @staticmethod
+    def _social_response(message: str) -> str:
+        if message in {"how are you", "how are you doing", "how's it going"}:
+            return "I’m ready to help. Tell me what you’re investigating, and I’ll ask for any missing details before checking your BuildPulse sources."
+        if message in {"thanks", "thank you"}:
+            return "You’re welcome. Is there another service, failure, incident, or release risk you’d like to investigate?"
+        if message in {"bye", "goodbye"}:
+            return "Goodbye. I’ll be here when you need to investigate another BuildPulse issue."
+        if message in {"who are you", "what can you do"}:
+            return "I’m the BuildPulse Copilot. I investigate CI failures, release risk, ownership, incidents, and prior resolutions using only your connected internal sources."
+        return (
+            "Hello! I’m the BuildPulse Copilot. I can help you investigate CI failures, "
+            "release risk, service ownership, incidents, and resolutions using only your "
+            "connected repository, Jira, Confluence, and BuildPulse knowledge sources. "
+            "What would you like to investigate?"
+        )
 
     def __init__(self, repository: RepositoryIntelligence | None = None, settings: AgentSettings | None = None) -> None:
         self.repository = repository or RepositoryIntelligence()
@@ -320,12 +338,7 @@ class BuildPulseAgentRuntime:
         normalized_question = re.sub(r"\s+", " ", question_lower).strip().strip(".,!?;:")
         if normalized_question in self.SOCIAL_MESSAGES:
             return {
-                "answer": (
-                    "Hello! I’m the BuildPulse Copilot. I can help you investigate CI failures, "
-                    "release risk, service ownership, incidents, and resolutions using only your "
-                    "connected repository, Jira, Confluence, and BuildPulse knowledge sources. "
-                    "What would you like to investigate?"
-                ),
+                "answer": self._social_response(normalized_question),
                 "sources": [],
                 "service_id": service_id,
                 "agent_trace": [self._event("Copilot Response", "complete", "Handled conversational greeting without knowledge claims.")],
