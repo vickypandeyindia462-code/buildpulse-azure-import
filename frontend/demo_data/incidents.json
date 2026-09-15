@@ -1,0 +1,4 @@
+[
+  {"id":"INC-2091","title":"Loan Service unavailable","priority":"P1","status":"Active","service":"Loan Service"},
+  {"id":"INC-1842","title":"Loan platform degraded","priority":"P2","status":"Resolved","service":"Loan Service"}
+]

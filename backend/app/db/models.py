@@ -1,6 +1,6 @@
 from sqlalchemy import Column, String, Text
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base
 import uuid
 import os
 

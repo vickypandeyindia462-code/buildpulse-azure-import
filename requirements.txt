@@ -11,5 +11,8 @@ presidio-analyzer
 presidio-anonymizer
 python-dotenv
 requests
+openai
+google-genai
 azure-ai-inference
 pytest
+PyYAML

@@ -17,6 +17,9 @@ def test_ingestion_agent():
         # verify persisted
         stored = db.query(Document).count()
         assert stored >= 2
+        inserted = db.query(Document).filter(Document.id.in_([item["id"] for item in res["documents"]])).all()
+        assert len(inserted) == 2
+        assert all(isinstance(item.embedding, str) for item in inserted)
     finally:
         db.close()
 
@@ -33,3 +36,11 @@ def test_security_check_agent():
     res = security_check.run_sync(text, {})
     assert any(f["type"] == "EMAIL" for f in res["findings"]) 
     assert any(f["type"] == "SSN" for f in res["findings"]) 
+    assert "alice@example.com" not in res["redacted_text"]
+    assert "123-45-6789" not in res["redacted_text"]
+
+
+def test_security_check_redacts_secret_tokens():
+    res = security_check.run_sync("token sk-abcdefghijklmnopqrstuvwxyz123456", {})
+    assert any(f["type"] == "SECRET" for f in res["findings"])
+    assert "abcdefghijklmnopqrstuvwxyz" not in res["redacted_text"]

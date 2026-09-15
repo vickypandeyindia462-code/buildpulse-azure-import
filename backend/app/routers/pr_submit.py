@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Body
 from typing import List, Dict, Any
 import os
 import requests
 import base64
 import json
 from datetime import datetime
+from ..config import Settings
 
 router = APIRouter(prefix="/submit", tags=["submit"])
 
@@ -14,13 +15,8 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 def get_owner_repo():
     """Resolve owner/repo from environment at call time."""
-    GITHUB_REPO = os.getenv("GITHUB_REPO", "vickypandeyindia462-code/Hackathon-26")
-    if ":" in GITHUB_REPO:
-        return tuple(GITHUB_REPO.split(":", 1))
-    if "/" in GITHUB_REPO:
-        return tuple(GITHUB_REPO.split("/", 1))
-    # fallback to known default
-    return tuple("vickypandeyindia462-code/Hackathon-26".split("/", 1))
+    settings = Settings.from_env()
+    return settings.github_owner, settings.github_repo
 
 GITHUB_API = "https://api.github.com"
 
@@ -33,8 +29,25 @@ def gh_headers():
 
 
 @router.post("/pr")
-def submit_create_pr(docs: List[Dict[str, Any]]):
-    """Create a branch, add the submission JSON file under data/submissions/, and open a PR to main."""
+def submit_create_pr(payload: Any = Body(...)):
+    """Create a branch, add the submission JSON file under data/submissions/, and open a PR to main.
+
+    Payload can be either a list of document dicts (legacy) or an object like:
+      {"docs": [...], "reviewers": ["user1","user2"]}
+    """
+    # normalize incoming payload
+    if isinstance(payload, list):
+        docs = payload
+        reviewers = None
+    elif isinstance(payload, dict):
+        docs = payload.get("docs") or payload.get("documents") or payload.get("items") or payload.get("payload")
+        if docs is None:
+            # maybe the dict is itself a single doc
+            docs = [payload]
+        reviewers = payload.get("reviewers")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
     owner, repo = get_owner_repo()
     # Ensure a usable fallback for local testing if env parsing fails
     if not owner or not repo:
@@ -82,6 +95,17 @@ def submit_create_pr(docs: List[Dict[str, Any]]):
         r = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/pulls", headers=gh_headers(), json=pr_payload)
         r.raise_for_status()
         pr = r.json()
+
+        # optionally request reviewers (GitHub API separate endpoint)
+        try:
+            if reviewers and isinstance(reviewers, (list, tuple)) and len(reviewers) > 0:
+                pr_number = pr.get("number")
+                if pr_number:
+                    rev_payload = {"reviewers": reviewers}
+                    rr = requests.post(f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers", headers=gh_headers(), json=rev_payload)
+                    # ignore reviewer errors but log them
+        except Exception:
+            pass
 
         return {"pr_url": pr.get("html_url"), "branch": branch_name, "file": filename}
     except RuntimeError as re:

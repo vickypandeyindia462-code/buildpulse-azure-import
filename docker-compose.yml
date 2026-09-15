@@ -12,18 +12,17 @@ services:
       - "5432:5432"
 
   api:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     env_file: .env.example
+    environment:
+      DEMO_SERVICES_REPO_PATH: /data/demo-services
     depends_on: [postgres]
+    volumes:
+      - ../buildpulse-demo-services:/data/demo-services:ro
     ports:
       - "8000:8000"
-
-  frontend:
-    build: ./frontend
-    env_file: .env.example
-    depends_on: [api]
-    ports:
-      - "8501:8501"
 
 volumes:
   pgdata:

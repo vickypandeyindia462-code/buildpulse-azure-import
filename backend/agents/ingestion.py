@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional, List
 import asyncio
 import uuid
 import os
+import json
 
 try:
     # import embedding provider if available
@@ -16,7 +17,7 @@ async def run(docs: List[Dict[str, Any]], context: Dict[str, Any], db=None, tool
         out = []
         for d in docs:
             doc_id = str(uuid.uuid4())
-            out.append({"id": doc_id, "content": d.get("content", "")})
+            out.append({"id": doc_id, "content": d.get("content", ""), "source": d.get("source")})
         return out
 
     loop = asyncio.get_event_loop()
@@ -36,29 +37,21 @@ async def run(docs: List[Dict[str, Any]], context: Dict[str, Any], db=None, tool
                         emb = None
 
                 # if embedding is a list, and DB expects text fallback, stringify
-                if emb is not None and isinstance(emb, (list, tuple)):
-                    store_emb = emb
-                else:
-                    store_emb = None
+                store_emb = emb if isinstance(emb, (list, tuple)) else None
+                if store_emb is not None and db.get_bind().dialect.name == "sqlite":
+                    store_emb = json.dumps(store_emb)
 
                 doc = Document(id=d["id"], content=d["content"], source=d.get("source"))
                 # attach embedding if model has attribute
                 if hasattr(Document, "embedding") and store_emb is not None:
-                    try:
-                        # if embedding column expects vector, pass list; otherwise store as JSON/text
-                        doc.embedding = store_emb
-                    except Exception:
-                        try:
-                            import json
-
-                            doc.embedding = json.dumps(store_emb)
-                        except Exception:
-                            pass
+                    # SQLite receives serialized JSON; pgvector receives the list.
+                    doc.embedding = store_emb
 
                 db.add(doc)
             db.commit()
         except Exception:
             db.rollback()
+            raise
 
     return {"processed_count": len(processed), "documents": processed}
 
