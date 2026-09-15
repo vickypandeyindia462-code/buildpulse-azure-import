@@ -313,7 +313,7 @@ class BuildPulseAgentRuntime:
             "mode": self.status()["mode"],
         }
 
-    def chat(self, question: str, service_id: str | None = None) -> dict[str, Any]:
+    def chat(self, question: str, service_id: str | None = None, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
         security = scan_and_redact(question)
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
@@ -333,12 +333,48 @@ class BuildPulseAgentRuntime:
                 "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
                 "audit_id": str(uuid.uuid4()),
             }
-        if not service_id:
-            for service in self.repository.services():
-                if service["id"] in question_lower or service["name"].lower() in question_lower:
-                    service_id = service["id"]
+        safe_history: list[str] = []
+        for turn in (history or [])[-6:]:
+            content = str(turn.get("content", ""))[:800]
+            if content:
+                safe_history.append(scan_and_redact(content)["redacted_text"])
+        for service in self.repository.services():
+            if service["id"] in question_lower or service["name"].lower() in question_lower:
+                service_id = service["id"]
+                break
+        if not service_id and safe_history:
+            for previous_turn in reversed(safe_history):
+                previous_text = previous_turn.lower()
+                matched_service = next(
+                    (
+                        service for service in self.repository.services()
+                        if service["id"] in previous_text or service["name"].lower() in previous_text
+                    ),
+                    None,
+                )
+                if matched_service:
+                    service_id = matched_service["id"]
                     break
-        documents = self._documents(service_id, safe_question)
+        vague_requests = {
+            "help", "help me", "i need help", "i have an issue", "there is an issue",
+            "something failed", "it failed", "can you investigate", "investigate this",
+        }
+        if not service_id and normalized_question in vague_requests:
+            return {
+                "answer": "I can investigate that. Which service is affected—Loan Service, Payments API, API Gateway, or Identity Service—and what symptom or failed job are you seeing?",
+                "sources": [],
+                "service_id": None,
+                "needs_clarification": True,
+                "agent_trace": [self._event("Requirement Understanding", "waiting", "Asked for the affected service and observed symptom.")],
+                "mode": self.status()["mode"],
+                "provider_fallback": None,
+                "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
+                "audit_id": str(uuid.uuid4()),
+            }
+        contextual_question = safe_question
+        if safe_history:
+            contextual_question = f"Conversation context: {' | '.join(safe_history)}\nCurrent request: {safe_question}"
+        documents = self._documents(service_id, contextual_question)
         if service_id:
             service = self.repository.service(service_id)
             catalog_fact = {
@@ -365,11 +401,11 @@ class BuildPulseAgentRuntime:
         elif self.settings.live_ready and self.settings.provider == "gemini":
             provider = GeminiProvider(self.settings)
             try:
-                answer = provider.complete(question=safe_question, evidence=evidence)
+                answer = provider.complete(question=contextual_question, evidence=evidence)
             except Exception as error:
                 provider_error = type(error).__name__
                 provider = MockLLMProvider()
-                answer = provider.complete(question=safe_question, evidence=evidence)
+                answer = provider.complete(question=contextual_question, evidence=evidence)
         elif self.settings.live_ready and self.settings.provider == "azure_openai":
             provider = AzureOpenAIProvider(self.settings)
             try:
@@ -380,7 +416,7 @@ class BuildPulseAgentRuntime:
                 answer = provider.complete(question=safe_question, evidence=evidence)
         else:
             provider = MockLLMProvider()
-            answer = provider.complete(question=safe_question, evidence=evidence)
+            answer = provider.complete(question=contextual_question, evidence=evidence)
         return {
             "answer": answer,
             "sources": [
@@ -391,6 +427,7 @@ class BuildPulseAgentRuntime:
             "agent_trace": (failure or {"agent_trace": []})["agent_trace"] + [self._event("Copilot Response", "complete", f"Answered using {provider.name} provider.")],
             "mode": self.status()["mode"],
             "provider_fallback": provider_error,
+            "needs_clarification": False,
             "security": {
                 "findings_count": len(security["findings"]),
                 "redacted": bool(security["findings"]),

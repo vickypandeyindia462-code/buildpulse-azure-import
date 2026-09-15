@@ -4,9 +4,30 @@ function go(id){pages.forEach(p=>p.classList.toggle('show',p.id===id));document.
 document.querySelectorAll('[data-page],[data-go]').forEach(e=>e.addEventListener('click',()=>go(e.dataset.page||e.dataset.go)));
 document.querySelector('#menu').addEventListener('click',()=>document.querySelector('.sidebar').classList.toggle('open'));
 const input=document.querySelector('#question'), thread=document.querySelector('#thread');
+const chatHistory=[];
+let activeServiceId=null;
 const safeText=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 function addMessage(kind, content){thread.insertAdjacentHTML('beforeend',`<div class="message ${kind==='user'?'user-msg':''}">${kind==='user'?'': '<b class="bot">✦</b>'}<div><p>${content}</p></div></div>`)}
-async function answer(){const q=input.value.trim();if(!q)return;addMessage('user',safeText(q));input.value='';const pending=document.createElement('div');pending.className='message';pending.innerHTML='<b class="bot">✦</b><div><p>BuildPulse is coordinating CI, knowledge, risk, and SME agents…</p></div>';thread.appendChild(pending);thread.scrollIntoView({behavior:'smooth',block:'end'});try{const response=await fetch('/api/copilot/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});if(!response.ok)throw new Error(`API ${response.status}`);const result=await response.json();const sources=(result.sources||[]).map(source=>`<div class="source-card"><b>▤ ${safeText(source.title)}</b> ${source.url?`<a href="${safeText(source.url)}" target="_blank" rel="noopener">Open ${safeText(source.source||'source')} ↗</a>`:`Evidence used by the ${safeText(result.mode)} agent workflow.`}</div>`).join('');const trace=(result.agent_trace||[]).map(event=>safeText(event.agent)).join(' → ');const security=result.security?.redacted?`${result.security.findings_count} sensitive item(s) redacted before analysis · `:'Security scan passed · ';pending.innerHTML=`<b class="bot">✦</b><div><p>${safeText(result.answer).replace(/\n/g,'<br>')}</p>${sources}<small>${security}Audit ${safeText(result.audit_id||'not recorded')}</small><small>Agent trace: ${trace||'Copilot Response'}</small></div>`}catch(error){pending.innerHTML='<b class="bot">✦</b><div><p><strong>BuildPulse Copilot is temporarily unavailable.</strong> Please retry in a moment.</p><small>The request could not reach the grounded AI service; no fallback answer was generated.</small></div>'}thread.scrollIntoView({behavior:'smooth',block:'end'})}
+async function answer(){
+  const q=input.value.trim();if(!q)return;
+  addMessage('user',safeText(q));input.value='';
+  const pending=document.createElement('div');pending.className='message';
+  pending.innerHTML='<b class="bot">✦</b><div><p>BuildPulse is understanding your request and retrieving relevant internal evidence…</p></div>';
+  thread.appendChild(pending);thread.scrollIntoView({behavior:'smooth',block:'end'});
+  try{
+    const response=await fetch('/api/copilot/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,service_id:activeServiceId,history:chatHistory.slice(-10)})});
+    if(!response.ok)throw new Error(`API ${response.status}`);
+    const result=await response.json();
+    activeServiceId=result.service_id||activeServiceId;
+    chatHistory.push({role:'user',content:q},{role:'assistant',content:result.answer});
+    if(chatHistory.length>12)chatHistory.splice(0,chatHistory.length-12);
+    const sources=(result.sources||[]).map(source=>`<div class="source-card"><b>▤ ${safeText(source.title)}</b> ${source.url?`<a href="${safeText(source.url)}" target="_blank" rel="noopener">Open ${safeText(source.source||'source')} ↗</a>`:`Evidence used by the ${safeText(result.mode)} agent workflow.`}</div>`).join('');
+    const trace=(result.agent_trace||[]).map(event=>safeText(event.agent)).join(' → ');
+    const security=result.security?.redacted?`${result.security.findings_count} sensitive item(s) redacted before analysis · `:'Security scan passed · ';
+    pending.innerHTML=`<b class="bot">✦</b><div><p>${safeText(result.answer).replace(/\n/g,'<br>')}</p>${sources}<small>${security}Audit ${safeText(result.audit_id||'not recorded')}</small><small>Agent trace: ${trace||'Copilot Response'}</small></div>`;
+  }catch(error){pending.innerHTML='<b class="bot">✦</b><div><p><strong>BuildPulse Copilot is temporarily unavailable.</strong> Please retry in a moment.</p><small>The request could not reach the grounded AI service; no fallback answer was generated.</small></div>'}
+  thread.scrollIntoView({behavior:'smooth',block:'end'});
+}
 document.querySelector('#send').addEventListener('click',answer);input.addEventListener('keydown',e=>{if(e.key==='Enter')answer()});document.querySelectorAll('.suggestions button').forEach(b=>b.addEventListener('click',()=>{input.value=b.textContent;answer()}));
 const fileInput=document.querySelector('#fileInput'),fileReady=document.querySelector('#fileReady'),fileName=document.querySelector('#fileName');
 fileInput.addEventListener('change',()=>{if(fileInput.files[0]){fileName.textContent=fileInput.files[0].name;fileReady.classList.add('show')}});

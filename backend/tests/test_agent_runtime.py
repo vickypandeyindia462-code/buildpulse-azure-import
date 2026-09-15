@@ -57,6 +57,34 @@ def test_live_provider_failure_returns_grounded_local_answer(monkeypatch):
     assert result["sources"]
 
 
+def test_vague_request_asks_for_requirement_details():
+    result = runtime().chat("I have an issue")
+    assert result["needs_clarification"] is True
+    assert "Which service" in result["answer"]
+    assert result["sources"] == []
+
+
+def test_follow_up_resolves_service_from_conversation_history():
+    result = runtime().chat(
+        "Who is the backup owner?",
+        history=[{"role": "user", "content": "Tell me about the Payments API"}],
+    )
+    assert result["service_id"] == "payments-api"
+    assert "Kavya Thomas" in result["answer"]
+
+
+def test_follow_up_prefers_most_recent_service_over_clarification_list():
+    result = runtime().chat(
+        "Who owns it?",
+        history=[
+            {"role": "assistant", "content": "Which service: Loan Service, Payments API, API Gateway, or Identity Service?"},
+            {"role": "user", "content": "The Payments API is timing out"},
+        ],
+    )
+    assert result["service_id"] == "payments-api"
+    assert "Dev Shah" in result["answer"]
+
+
 def test_chat_redacts_sensitive_input_before_provider_use():
     result = runtime().chat("Why did the loan build fail? Contact dev@example.com")
     assert result["security"] == {"findings_count": 1, "redacted": True}

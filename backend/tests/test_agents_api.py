@@ -21,3 +21,12 @@ def test_copilot_chat_endpoint():
     assert response.json()["answer"]
     assert response.json()["security"]["redacted"] is False
     assert response.json()["audit_id"]
+
+
+def test_copilot_accepts_recent_conversation_history():
+    response = client.post("/api/copilot/chat", json={
+        "question": "Who is the backup owner?",
+        "history": [{"role": "user", "content": "Tell me about the Payments API"}],
+    })
+    assert response.status_code == 200
+    assert response.json()["service_id"] == "payments-api"

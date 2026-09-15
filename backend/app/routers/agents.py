@@ -16,6 +16,7 @@ def runtime() -> BuildPulseAgentRuntime:
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=4000)
     service_id: str | None = None
+    history: list[dict[str, str]] = Field(default_factory=list, max_length=12)
 
 
 @router.get("/agents/status")
@@ -45,4 +46,4 @@ def analyse_ci_failure(run_id: str) -> dict[str, Any]:
 
 @router.post("/copilot/chat")
 def copilot_chat(payload: ChatRequest) -> dict[str, Any]:
-    return runtime().chat(payload.question, payload.service_id)
+    return runtime().chat(payload.question, payload.service_id, payload.history)
