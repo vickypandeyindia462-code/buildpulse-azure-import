@@ -23,12 +23,12 @@ def test_failure_analysis_has_safe_fix_and_agent_trace():
     assert result["audit_id"]
 
 
-def test_mock_chat_returns_sources():
+def test_ci_diagnosis_requests_exact_job_before_sources():
     result = runtime().chat("Why did the Loan Service CI build fail?")
     assert result["mode"] == "demo"
-    assert result["sources"]
-    assert "BuildPulse mock analysis" not in result["answer"]
-    assert "[Source " in result["answer"]
+    assert result["needs_clarification"] is True
+    assert "Which failed job" in result["answer"]
+    assert result["sources"] == []
 
 
 def test_greeting_is_natural_and_does_not_trigger_retrieval():
@@ -118,6 +118,38 @@ def test_service_context_explanation_does_not_claim_automatic_knowledge():
     result = runtime().chat("How do you know what service I am using?")
     assert "don’t know your service automatically" in result["answer"]
     assert result["sources"] == []
+
+
+def test_identity_question_tolerates_trailing_symbol():
+    result = runtime().chat("who are you>")
+    assert result["answer"].startswith("I’m the BuildPulse Copilot")
+    assert result["sources"] == []
+
+
+def test_ci_intake_collects_service_then_failed_job():
+    first = runtime().chat("CI failure diagnosis")
+    assert "Which service is affected" in first["answer"]
+    assert first["sources"] == []
+
+    second = runtime().chat(
+        "Loan Service",
+        history=[{"role": "user", "content": "CI failure diagnosis"}],
+    )
+    assert second["service_id"] == "loan-service"
+    assert "Which failed job" in second["answer"]
+    assert second["sources"] == []
+
+
+def test_ci_analysis_uses_exact_selected_job_only():
+    result = runtime().chat(
+        "loan-service-tests",
+        service_id="loan-service",
+        history=[{"role": "user", "content": "CI failure diagnosis for Loan Service"}],
+    )
+    assert result["needs_clarification"] is False
+    assert len(result["sources"]) == 1
+    assert result["sources"][0]["title"] == "CI analysis — loan-service-tests"
+    assert "safe value (30)" in result["answer"]
 
 
 def test_follow_up_resolves_service_from_conversation_history():

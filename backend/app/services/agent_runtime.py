@@ -86,7 +86,7 @@ class MockLLMProvider:
         for index, item in enumerate(evidence[:3], start=1):
             sentences = re.split(r"(?<=[.!?])\s+|\n+", item.get("content", ""))
             ranked = sorted(
-                (sentence.strip() for sentence in sentences if 25 <= len(sentence.strip()) <= 320),
+                (sentence.strip() for sentence in sentences if 25 <= len(sentence.strip()) <= 800),
                 key=lambda sentence: len(query_terms & set(re.findall(r"[a-z0-9_-]{3,}", sentence.lower()))),
                 reverse=True,
             )
@@ -203,6 +203,19 @@ class BuildPulseAgentRuntime:
             "connected repository, Jira, Confluence, and BuildPulse knowledge sources. "
             "What would you like to investigate?"
         )
+
+    @staticmethod
+    def _intent(text: str) -> str | None:
+        patterns = (
+            ("ownership", r"\b(owner|owns|ownership|backup|contact)\b"),
+            ("ci_failure", r"\b(ci|build|job|pipeline|workflow|fail|failure|error)\b"),
+            ("incident", r"\b(incident|outage|production issue)\b"),
+            ("release_risk", r"\b(release|deploy|deployment|pr|pull request|risk)\b"),
+            ("api_slo", r"\b(api|endpoint|slo|latency|availability|health)\b"),
+            ("runbook", r"\b(runbook|recovery|resolution|fix|timeout)\b"),
+            ("documentation", r"\b(document|documentation|guide|onboarding)\b"),
+        )
+        return next((name for name, pattern in patterns if re.search(pattern, text)), None)
 
     def __init__(self, repository: RepositoryIntelligence | None = None, settings: AgentSettings | None = None) -> None:
         self.repository = repository or RepositoryIntelligence()
@@ -337,7 +350,8 @@ class BuildPulseAgentRuntime:
         security = scan_and_redact(question)
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
-        normalized_question = re.sub(r"\s+", " ", question_lower).strip().strip(".,!?;:")
+        normalized_question = re.sub(r"\s+", " ", question_lower).strip()
+        normalized_question = re.sub(r"^[\W_]+|[\W_]+$", "", normalized_question)
 
         def clarification(answer: str, summary: str, resolved_service: str | None = None) -> dict[str, Any]:
             return {
@@ -353,10 +367,14 @@ class BuildPulseAgentRuntime:
                 "audit_id": str(uuid.uuid4()),
             }
         safe_history: list[str] = []
+        safe_user_history: list[str] = []
         for turn in (history or [])[-6:]:
             content = str(turn.get("content", ""))[:800]
             if content:
-                safe_history.append(scan_and_redact(content)["redacted_text"])
+                safe_content = scan_and_redact(content)["redacted_text"]
+                safe_history.append(safe_content)
+                if turn.get("role") == "user":
+                    safe_user_history.append(safe_content)
         if normalized_question in self.SOCIAL_MESSAGES:
             answer = self._social_response(normalized_question)
             provider_name = "local"
@@ -407,6 +425,23 @@ class BuildPulseAgentRuntime:
                 "I can help with BuildPulse engineering services, but I don’t yet have a valid service or requirement. Are you asking about Loan Service, Payments API, API Gateway, or Identity Service—and do you need help with a CI failure, incident, release risk, documentation, or ownership?",
                 "Cleared stale context and requested an in-scope service and goal.",
             )
+        current_intent = self._intent(normalized_question)
+        if explicit_service_id:
+            explicit_service = self.repository.service(explicit_service_id)
+            if normalized_question in {explicit_service["id"], explicit_service["name"].lower()}:
+                current_intent = None
+        intent = current_intent
+        if not intent:
+            intent = next((found for turn in reversed(safe_user_history) if (found := self._intent(turn.lower()))), None)
+        intent_labels = {
+            "ownership": "ownership information",
+            "ci_failure": "a CI failure diagnosis",
+            "incident": "incident help",
+            "api_slo": "API or SLO information",
+            "runbook": "a recovery runbook",
+            "documentation": "service documentation",
+            "release_risk": "release or PR risk information",
+        }
         if not service_id and safe_history:
             for previous_turn in reversed(safe_history):
                 previous_text = previous_turn.lower()
@@ -450,7 +485,7 @@ class BuildPulseAgentRuntime:
             selected_service = self.repository.service(service_id)
             service_only = normalized_question in {selected_service["id"], selected_service["name"].lower()}
             vague_service_issue = normalized_question in {"it failed", "it is failing", "there is a problem", "it has an issue"}
-            if service_only:
+            if service_only and not intent:
                 return clarification(
                     f"Got it—{selected_service['name']}. What are you trying to do, or what problem are you seeing?",
                     "Confirmed the service and requested the user's goal or symptom.",
@@ -462,18 +497,35 @@ class BuildPulseAgentRuntime:
                     "Confirmed the service and requested the issue type and observable evidence.",
                     service_id,
                 )
-        understood_intent = bool(re.search(
-            r"\b(owner|owns|ownership|backup|contact|ci|build|job|fail|error|incident|release|risk|"
-            r"deploy|deployment|runbook|document|documentation|api|endpoint|slo|latency|"
-            r"availability|dependency|ticket|jira|resolution|fix|timeout|health)\b",
-            normalized_question,
-        ))
-        if not understood_intent:
+        if not intent:
             return clarification(
                 "Before I search the knowledge base, what exactly do you need: ownership, a CI failure diagnosis, incident help, release risk, API/SLO information, or a runbook?",
                 "Requested a concrete operational intent before retrieval.",
                 service_id,
             )
+        service_scoped_intents = {"ownership", "ci_failure", "incident", "api_slo", "runbook", "documentation"}
+        selected_ci_run = None
+        if intent in service_scoped_intents and not service_id:
+            return clarification(
+                f"I understand that you need {intent_labels[intent]}. Which service is affected: Loan Service, Payments API, API Gateway, or Identity Service?",
+                f"Captured intent={intent}; waiting for the service before retrieval.",
+            )
+        if intent == "ci_failure" and service_id:
+            candidate_text = " ".join([normalized_question, *safe_user_history]).lower()
+            matching_runs = [run for run in self.failed_runs() if run.get("service_id") == service_id]
+            selected_ci_run = next(
+                (run for run in matching_runs if str(run.get("job", "")).lower() in candidate_text),
+                None,
+            )
+            if not selected_ci_run:
+                service_name = self.repository.service(service_id)["name"]
+                jobs = list(dict.fromkeys(str(run.get("job") or run.get("workflow")) for run in matching_runs))
+                choices = ", ".join(jobs[:5]) if jobs else "a job name or GitHub run link"
+                return clarification(
+                    f"I have the intent ({intent_labels['ci_failure']}) and service ({service_name}). Which failed job should I analyse? Available recent failures: {choices}.",
+                    "Captured CI intent and service; waiting for an exact failed job before analysis.",
+                    service_id,
+                )
         contextual_question = safe_question
         if safe_history:
             contextual_question = f"Conversation context: {' | '.join(safe_history)}\nCurrent request: {safe_question}"
@@ -506,11 +558,23 @@ class BuildPulseAgentRuntime:
                     "responsible team, and whether direct contact details are recorded. Do not add unrelated service information."
                 )
         failure = None
-        if any(word in question_lower for word in ("fail", "ci", "build", "loan", "release")):
-            failures = self.failed_runs()
-            if failures:
-                failure = self.analyse_failure(str(failures[0]["id"]))
-        evidence = documents + ([{"title": "Latest CI analysis", "content": failure["diagnosis"]}] if failure else [])
+        if selected_ci_run:
+            failure = self.analyse_failure(str(selected_ci_run["id"]))
+            documents = [{
+                "title": f"CI analysis — {selected_ci_run.get('job') or selected_ci_run.get('workflow')}",
+                "content": (
+                    f"Failure class: {failure['failure_class']}; Diagnosis: {failure['diagnosis'].replace('.', ';').strip()} "
+                    f"Recommended fix: {failure['recommended_fix'].replace('.', ';').strip()}."
+                ),
+                "source": selected_ci_run.get("source", "ci"),
+                "url": selected_ci_run.get("url"),
+                "score": 100,
+            }]
+            contextual_question = (
+                f"{contextual_question}\nResponse requirement: Diagnose only the selected CI job and give only "
+                "the supported cause and recommended fix. Do not discuss other services or failures."
+            )
+        evidence = documents
         provider_error = None
         if not evidence:
             provider = MockLLMProvider()
