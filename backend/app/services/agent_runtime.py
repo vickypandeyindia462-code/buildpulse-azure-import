@@ -401,6 +401,12 @@ class BuildPulseAgentRuntime:
                 "Yes. Which service do you mean: Loan Service, Payments API, API Gateway, or Identity Service?",
                 "Requested the service name before knowledge retrieval.",
             )
+        if explicit_service_id is None and re.search(r"\b(help|assist|support)\b", normalized_question):
+            service_id = None
+            return clarification(
+                "I can help with BuildPulse engineering services, but I don’t yet have a valid service or requirement. Are you asking about Loan Service, Payments API, API Gateway, or Identity Service—and do you need help with a CI failure, incident, release risk, documentation, or ownership?",
+                "Cleared stale context and requested an in-scope service and goal.",
+            )
         if not service_id and safe_history:
             for previous_turn in reversed(safe_history):
                 previous_text = previous_turn.lower()
@@ -456,6 +462,18 @@ class BuildPulseAgentRuntime:
                     "Confirmed the service and requested the issue type and observable evidence.",
                     service_id,
                 )
+        understood_intent = bool(re.search(
+            r"\b(owner|owns|ownership|backup|contact|ci|build|job|fail|error|incident|release|risk|"
+            r"deploy|deployment|runbook|document|documentation|api|endpoint|slo|latency|"
+            r"availability|dependency|ticket|jira|resolution|fix|timeout|health)\b",
+            normalized_question,
+        ))
+        if not understood_intent:
+            return clarification(
+                "Before I search the knowledge base, what exactly do you need: ownership, a CI failure diagnosis, incident help, release risk, API/SLO information, or a runbook?",
+                "Requested a concrete operational intent before retrieval.",
+                service_id,
+            )
         contextual_question = safe_question
         if safe_history:
             contextual_question = f"Conversation context: {' | '.join(safe_history)}\nCurrent request: {safe_question}"

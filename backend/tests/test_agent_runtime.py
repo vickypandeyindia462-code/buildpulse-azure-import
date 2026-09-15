@@ -90,6 +90,22 @@ def test_my_service_request_asks_for_service_before_retrieval():
     assert result["sources"] == []
 
 
+def test_out_of_domain_help_clears_stale_service_context():
+    result = runtime().chat("I need help with my car", service_id="loan-service")
+    assert result["needs_clarification"] is True
+    assert result["service_id"] is None
+    assert "BuildPulse engineering services" in result["answer"]
+    assert "Meera Kulkarni" not in result["answer"]
+    assert result["sources"] == []
+
+
+def test_unclear_request_does_not_retrieve_even_with_stale_service():
+    result = runtime().chat("Tell me something interesting", service_id="loan-service")
+    assert result["needs_clarification"] is True
+    assert "what exactly do you need" in result["answer"]
+    assert result["sources"] == []
+
+
 def test_service_name_only_asks_for_goal_or_symptom():
     result = runtime().chat("Payments API")
     assert result["needs_clarification"] is True
@@ -157,5 +173,6 @@ def test_gemini_provider_is_ready_only_with_key_and_model():
 
 def test_unrelated_question_refuses_without_kb_evidence():
     result = runtime().chat("Explain quantum astronomy nebula")
-    assert "does not contain enough evidence" in result["answer"]
+    assert result["needs_clarification"] is True
+    assert "what exactly do you need" in result["answer"]
     assert result["sources"] == []

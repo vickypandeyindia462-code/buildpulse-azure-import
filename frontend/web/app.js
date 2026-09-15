@@ -18,7 +18,7 @@ async function answer(){
     const response=await fetch('/api/copilot/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,service_id:activeServiceId,history:chatHistory.slice(-10)})});
     if(!response.ok)throw new Error(`API ${response.status}`);
     const result=await response.json();
-    activeServiceId=result.service_id||activeServiceId;
+    if(Object.prototype.hasOwnProperty.call(result,'service_id'))activeServiceId=result.service_id;
     chatHistory.push({role:'user',content:q},{role:'assistant',content:result.answer});
     if(chatHistory.length>12)chatHistory.splice(0,chatHistory.length-12);
     const sources=(result.sources||[]).map(source=>`<div class="source-card"><b>▤ ${safeText(source.title)}</b> ${source.url?`<a href="${safeText(source.url)}" target="_blank" rel="noopener">Open ${safeText(source.source||'source')} ↗</a>`:`Evidence used by the ${safeText(result.mode)} agent workflow.`}</div>`).join('');
