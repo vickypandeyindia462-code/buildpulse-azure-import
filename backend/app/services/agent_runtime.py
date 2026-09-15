@@ -368,9 +368,11 @@ class BuildPulseAgentRuntime:
                 "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
                 "audit_id": str(uuid.uuid4()),
             }
+        explicit_service_id = None
         for service in self.repository.services():
             if service["id"] in question_lower or service["name"].lower() in question_lower:
                 service_id = service["id"]
+                explicit_service_id = service["id"]
                 break
         if not service_id and safe_history:
             for previous_turn in reversed(safe_history):
@@ -385,6 +387,31 @@ class BuildPulseAgentRuntime:
                 if matched_service:
                     service_id = matched_service["id"]
                     break
+        ownership_request = bool(re.search(r"\b(who\s+owns|owner(?:ship)?\s+(?:of|for)|who\s+is\s+the\s+owner)\b", normalized_question))
+        if ownership_request and explicit_service_id is None:
+            target = re.sub(
+                r"\b(who\s+owns|owner(?:ship)?\s+(?:of|for)|who\s+is\s+the\s+owner)\b",
+                "",
+                normalized_question,
+            ).strip().strip("?.!")
+            target = re.sub(r"^the\s+", "", target)
+            contextual_targets = {"", "it", "this", "that", "this service", "that service", "service"}
+            if target not in contextual_targets:
+                return {
+                    "answer": (
+                        f"I don’t have a BuildPulse service named “{target}”. I can provide ownership only for "
+                        "Loan Service, Payments API, API Gateway, or Identity Service. Which one did you mean?"
+                    ),
+                    "sources": [],
+                    "service_id": None,
+                    "needs_clarification": True,
+                    "agent_trace": [self._event("Requirement Understanding", "waiting", "Rejected an unknown service and requested a catalogued service.")],
+                    "mode": self.status()["mode"],
+                    "provider_used": "scope_guard",
+                    "provider_fallback": None,
+                    "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
+                    "audit_id": str(uuid.uuid4()),
+                }
         vague_requests = {
             "help", "help me", "i need help", "i have an issue", "there is an issue",
             "something failed", "it failed", "can you investigate", "investigate this",
@@ -407,17 +434,31 @@ class BuildPulseAgentRuntime:
         documents = self._documents(service_id, contextual_question)
         if service_id:
             service = self.repository.service(service_id)
+            catalog_content = (
+                f"{service['name']} is a {service['tier']} service owned by {service['primary_owner']} "
+                f"with {service['backup_owner']} as backup owner and {service['team']} as the responsible team; "
+                f"its health endpoint is {service['health']} and its API documentation is {service['api']}; "
+                "no direct email or chat contact is recorded in the service catalog."
+            )
+            if ownership_request:
+                catalog_content = (
+                    f"{service['name']} primary owner: {service['primary_owner']}; backup owner: "
+                    f"{service['backup_owner']}; responsible team: {service['team']}; direct email or chat "
+                    "contact: not recorded in the service catalog."
+                )
             catalog_fact = {
                 "title": f"Service catalog — {service['name']}",
-                "content": (
-                    f"{service['name']} is a {service['tier']} service owned by {service['primary_owner']} "
-                    f"with {service['backup_owner']} as backup owner and {service['team']} as the responsible team. "
-                    f"Its health endpoint is {service['health']} and its API documentation is {service['api']}."
-                ),
+                "content": catalog_content,
                 "score": 100,
                 "source": "repository",
             }
             documents = [catalog_fact, *documents][:5]
+            if ownership_request:
+                documents = [catalog_fact]
+                contextual_question = (
+                    f"{contextual_question}\nResponse requirement: Return only the primary owner, backup owner, "
+                    "responsible team, and whether direct contact details are recorded. Do not add unrelated service information."
+                )
         failure = None
         if any(word in question_lower for word in ("fail", "ci", "build", "loan", "release")):
             failures = self.failed_runs()

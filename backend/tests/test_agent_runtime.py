@@ -103,6 +103,22 @@ def test_follow_up_prefers_most_recent_service_over_clarification_list():
     assert "Dev Shah" in result["answer"]
 
 
+def test_unknown_owner_target_does_not_leak_previous_service_context():
+    result = runtime().chat("Who owns Ferrari?", service_id="loan-service")
+    assert result["needs_clarification"] is True
+    assert "don’t have a BuildPulse service" in result["answer"]
+    assert "Meera Kulkarni" not in result["answer"]
+    assert result["sources"] == []
+
+
+def test_owner_request_uses_only_catalog_evidence():
+    result = runtime().chat("Who owns the Payments API?")
+    assert len(result["sources"]) == 1
+    assert result["sources"][0]["title"] == "Service catalog — Payments API"
+    assert "Dev Shah" in result["answer"]
+    assert "direct email" in result["answer"]
+
+
 def test_chat_redacts_sensitive_input_before_provider_use():
     result = runtime().chat("Why did the loan build fail? Contact dev@example.com")
     assert result["security"] == {"findings_count": 1, "redacted": True}
