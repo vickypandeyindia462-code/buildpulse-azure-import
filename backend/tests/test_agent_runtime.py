@@ -45,6 +45,18 @@ def test_social_follow_up_does_not_trigger_knowledge_retrieval():
     assert result["sources"] == []
 
 
+def test_live_gemini_handles_social_conversation(monkeypatch):
+    configured = AgentSettings(provider="gemini", gemini_api_key="test-key", gemini_model="test-model")
+    active_runtime = BuildPulseAgentRuntime(repository=RepositoryIntelligence(), settings=configured)
+    monkeypatch.setattr(GeminiProvider, "complete", lambda self, **kwargs: "I’m doing well—what are we investigating today?")
+
+    result = active_runtime.chat("How are you?")
+
+    assert result["answer"].startswith("I’m doing well")
+    assert result["provider_used"] == "gemini"
+    assert result["sources"] == []
+
+
 def test_service_owner_answer_is_grounded_in_catalog():
     result = runtime().chat("Who owns the Payments API?")
     assert "Dev Shah" in result["answer"]

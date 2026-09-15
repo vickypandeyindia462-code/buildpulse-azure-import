@@ -152,9 +152,11 @@ class GeminiProvider:
             config=types.GenerateContentConfig(
                 temperature=0.1,
                 system_instruction=(
-                    "You are BuildPulse. Answer only from the retrieved knowledge-base evidence. "
-                    "Cite claims using [Source N]. If the evidence is insufficient, say exactly what "
-                    "is missing. Never invent services, owners, incidents, fixes, or risk values."
+                    "You are BuildPulse. For greetings and social conversation, respond naturally and briefly "
+                    "without citations or enterprise claims. For operational questions, answer only from the "
+                    "retrieved knowledge-base evidence and cite claims using [Source N]. If the evidence is "
+                    "insufficient, say exactly what is missing. Never invent services, owners, incidents, "
+                    "fixes, or risk values."
                 ),
             ),
         )
@@ -336,21 +338,36 @@ class BuildPulseAgentRuntime:
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
         normalized_question = re.sub(r"\s+", " ", question_lower).strip().strip(".,!?;:")
-        if normalized_question in self.SOCIAL_MESSAGES:
-            return {
-                "answer": self._social_response(normalized_question),
-                "sources": [],
-                "service_id": service_id,
-                "agent_trace": [self._event("Copilot Response", "complete", "Handled conversational greeting without knowledge claims.")],
-                "mode": self.status()["mode"],
-                "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
-                "audit_id": str(uuid.uuid4()),
-            }
         safe_history: list[str] = []
         for turn in (history or [])[-6:]:
             content = str(turn.get("content", ""))[:800]
             if content:
                 safe_history.append(scan_and_redact(content)["redacted_text"])
+        if normalized_question in self.SOCIAL_MESSAGES:
+            answer = self._social_response(normalized_question)
+            provider_name = "local"
+            provider_error = None
+            if self.settings.live_ready and self.settings.provider == "gemini":
+                provider = GeminiProvider(self.settings)
+                social_question = safe_question
+                if safe_history:
+                    social_question = f"Conversation context: {' | '.join(safe_history)}\nCurrent message: {safe_question}"
+                try:
+                    answer = provider.complete(question=social_question, evidence=[])
+                    provider_name = provider.name
+                except Exception as error:
+                    provider_error = type(error).__name__
+            return {
+                "answer": answer,
+                "sources": [],
+                "service_id": service_id,
+                "agent_trace": [self._event("Copilot Response", "complete", f"Handled social conversation using {provider_name} provider without knowledge claims.")],
+                "mode": self.status()["mode"],
+                "provider_used": provider_name,
+                "provider_fallback": provider_error,
+                "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
+                "audit_id": str(uuid.uuid4()),
+            }
         for service in self.repository.services():
             if service["id"] in question_lower or service["name"].lower() in question_lower:
                 service_id = service["id"]
@@ -439,6 +456,7 @@ class BuildPulseAgentRuntime:
             "service_id": service_id,
             "agent_trace": (failure or {"agent_trace": []})["agent_trace"] + [self._event("Copilot Response", "complete", f"Answered using {provider.name} provider.")],
             "mode": self.status()["mode"],
+            "provider_used": provider.name,
             "provider_fallback": provider_error,
             "needs_clarification": False,
             "security": {
