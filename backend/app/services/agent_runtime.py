@@ -317,7 +317,7 @@ class BuildPulseAgentRuntime:
         security = scan_and_redact(question)
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
-        normalized_question = re.sub(r"\s+", " ", question_lower).strip()
+        normalized_question = re.sub(r"\s+", " ", question_lower).strip().strip(".,!?;:")
         if normalized_question in self.SOCIAL_MESSAGES:
             return {
                 "answer": (
@@ -358,15 +358,26 @@ class BuildPulseAgentRuntime:
             if failures:
                 failure = self.analyse_failure(str(failures[0]["id"]))
         evidence = documents + ([{"title": "Latest CI analysis", "content": failure["diagnosis"]}] if failure else [])
+        provider_error = None
         if not evidence:
             provider = MockLLMProvider()
             answer = "The BuildPulse knowledge base does not contain enough evidence to answer this question. Add or index a relevant service document."
         elif self.settings.live_ready and self.settings.provider == "gemini":
             provider = GeminiProvider(self.settings)
-            answer = provider.complete(question=safe_question, evidence=evidence)
+            try:
+                answer = provider.complete(question=safe_question, evidence=evidence)
+            except Exception as error:
+                provider_error = type(error).__name__
+                provider = MockLLMProvider()
+                answer = provider.complete(question=safe_question, evidence=evidence)
         elif self.settings.live_ready and self.settings.provider == "azure_openai":
             provider = AzureOpenAIProvider(self.settings)
-            answer = provider.complete(question=safe_question, evidence=evidence)
+            try:
+                answer = provider.complete(question=safe_question, evidence=evidence)
+            except Exception as error:
+                provider_error = type(error).__name__
+                provider = MockLLMProvider()
+                answer = provider.complete(question=safe_question, evidence=evidence)
         else:
             provider = MockLLMProvider()
             answer = provider.complete(question=safe_question, evidence=evidence)
@@ -379,6 +390,7 @@ class BuildPulseAgentRuntime:
             "service_id": service_id,
             "agent_trace": (failure or {"agent_trace": []})["agent_trace"] + [self._event("Copilot Response", "complete", f"Answered using {provider.name} provider.")],
             "mode": self.status()["mode"],
+            "provider_fallback": provider_error,
             "security": {
                 "findings_count": len(security["findings"]),
                 "redacted": bool(security["findings"]),

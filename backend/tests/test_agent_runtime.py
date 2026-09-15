@@ -1,4 +1,4 @@
-from backend.app.services.agent_runtime import AgentSettings, BuildPulseAgentRuntime
+from backend.app.services.agent_runtime import AgentSettings, BuildPulseAgentRuntime, GeminiProvider
 from backend.app.services.repository_intelligence import RepositoryIntelligence
 
 
@@ -32,16 +32,29 @@ def test_mock_chat_returns_sources():
 
 
 def test_greeting_is_natural_and_does_not_trigger_retrieval():
-    result = runtime().chat("Hello")
-    assert result["answer"].startswith("Hello!")
-    assert "BuildPulse mock analysis" not in result["answer"]
-    assert result["sources"] == []
+    for greeting in ("Hello", "Hello.", "Hi!", "  good morning!  "):
+        result = runtime().chat(greeting)
+        assert result["answer"].startswith("Hello!")
+        assert "BuildPulse mock analysis" not in result["answer"]
+        assert result["sources"] == []
 
 
 def test_service_owner_answer_is_grounded_in_catalog():
     result = runtime().chat("Who owns the Payments API?")
     assert "Dev Shah" in result["answer"]
     assert result["sources"][0]["title"] == "Service catalog — Payments API"
+
+
+def test_live_provider_failure_returns_grounded_local_answer(monkeypatch):
+    configured = AgentSettings(provider="gemini", gemini_api_key="test-key", gemini_model="test-model")
+    active_runtime = BuildPulseAgentRuntime(repository=RepositoryIntelligence(), settings=configured)
+    monkeypatch.setattr(GeminiProvider, "complete", lambda self, **kwargs: (_ for _ in ()).throw(RuntimeError("temporary outage")))
+
+    result = active_runtime.chat("Who owns the Payments API?")
+
+    assert "Dev Shah" in result["answer"]
+    assert result["provider_fallback"] == "RuntimeError"
+    assert result["sources"]
 
 
 def test_chat_redacts_sensitive_input_before_provider_use():
