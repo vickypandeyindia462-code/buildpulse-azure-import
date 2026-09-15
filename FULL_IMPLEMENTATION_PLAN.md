@@ -237,6 +237,13 @@ Acceptance evidence: repository metadata validation passed. Confluence now conta
 - Structured logging, tracing, health/readiness checks, metrics, and safe error contracts.
 - Postgres/pgvector CI, dependency scanning, browser E2E tests, staging, Azure rehearsal, and rollback plan.
 
+### M10 — Deferred platform enhancements
+
+- Activate PostgreSQL as the primary structured store and pgvector for semantic document/history retrieval.
+- Introduce LlamaIndex for metadata-aware ingestion and hybrid retrieval while retaining explicit BuildPulse orchestration and audit traces.
+- Add Gitleaks secret detection and Semgrep code-security findings to CI, Security Center, and PR Risk Radar.
+- Add Plotly visualizations for CI trends, release readiness, PR risk, incidents/MTTR, and knowledge reuse.
+
 ## Configuration contract
 
 Credentials belong only in local `.env` or a managed secret store—never source control or chat.
@@ -300,3 +307,4 @@ Primary endpoints: `/health`, `/api/agents/status`, `/api/ci/runs`, `/api/ci/fai
 - 2026-09-15 — Separated social conversation from enterprise retrieval and filtered generic Atlassian starter content from Confluence search, preventing greetings and courtesy questions from producing irrelevant citations.
 - 2026-09-15 — Enabled Gemini for the complete conversation experience, including greetings and small talk, with bounded redacted history and explicit provider reporting. Social turns do not retrieve documents; operational claims remain evidence-gated, with local fallback only when Gemini is unavailable.
 - 2026-09-15 — Added strict entity and answer-scope controls: ownership requests reject unknown services instead of inheriting stale context, and valid owner lookups use only the service-catalog record and return owner/team/contact availability without unrelated evidence.
+- 2026-09-15 — Added progressive requirement intake: generic “my service” requests ask for the service first, service-only replies ask for the goal/symptom next, vague failures ask for issue type and evidence, and service-context questions disclose exactly how context is determined. Deferred PostgreSQL/pgvector, LlamaIndex, Gitleaks/Semgrep, and Plotly work is recorded in M10.

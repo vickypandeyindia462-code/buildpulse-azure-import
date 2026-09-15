@@ -338,6 +338,20 @@ class BuildPulseAgentRuntime:
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
         normalized_question = re.sub(r"\s+", " ", question_lower).strip().strip(".,!?;:")
+
+        def clarification(answer: str, summary: str, resolved_service: str | None = None) -> dict[str, Any]:
+            return {
+                "answer": answer,
+                "sources": [],
+                "service_id": resolved_service,
+                "needs_clarification": True,
+                "agent_trace": [self._event("Requirement Understanding", "waiting", summary)],
+                "mode": self.status()["mode"],
+                "provider_used": "requirement_intake",
+                "provider_fallback": None,
+                "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
+                "audit_id": str(uuid.uuid4()),
+            }
         safe_history: list[str] = []
         for turn in (history or [])[-6:]:
             content = str(turn.get("content", ""))[:800]
@@ -368,12 +382,25 @@ class BuildPulseAgentRuntime:
                 "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
                 "audit_id": str(uuid.uuid4()),
             }
+        if re.search(r"\bhow do you know (?:what|which) service\b", normalized_question):
+            return {
+                **clarification(
+                    "I don’t know your service automatically. I only use a service you explicitly name in this conversation or one supplied by a BuildPulse page you opened. Tell me the service name, and I’ll confirm it before retrieving anything.",
+                    "Explained service-context boundaries and requested an explicit service.",
+                ),
+                "needs_clarification": False,
+            }
         explicit_service_id = None
         for service in self.repository.services():
             if service["id"] in question_lower or service["name"].lower() in question_lower:
                 service_id = service["id"]
                 explicit_service_id = service["id"]
                 break
+        if explicit_service_id is None and re.search(r"\b(my|this) service\b", normalized_question):
+            return clarification(
+                "Yes. Which service do you mean: Loan Service, Payments API, API Gateway, or Identity Service?",
+                "Requested the service name before knowledge retrieval.",
+            )
         if not service_id and safe_history:
             for previous_turn in reversed(safe_history):
                 previous_text = previous_turn.lower()
@@ -397,37 +424,38 @@ class BuildPulseAgentRuntime:
             target = re.sub(r"^the\s+", "", target)
             contextual_targets = {"", "it", "this", "that", "this service", "that service", "service"}
             if target not in contextual_targets:
-                return {
-                    "answer": (
+                return clarification(
+                    (
                         f"I don’t have a BuildPulse service named “{target}”. I can provide ownership only for "
                         "Loan Service, Payments API, API Gateway, or Identity Service. Which one did you mean?"
                     ),
-                    "sources": [],
-                    "service_id": None,
-                    "needs_clarification": True,
-                    "agent_trace": [self._event("Requirement Understanding", "waiting", "Rejected an unknown service and requested a catalogued service.")],
-                    "mode": self.status()["mode"],
-                    "provider_used": "scope_guard",
-                    "provider_fallback": None,
-                    "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
-                    "audit_id": str(uuid.uuid4()),
-                }
+                    "Rejected an unknown service and requested a catalogued service.",
+                )
         vague_requests = {
             "help", "help me", "i need help", "i have an issue", "there is an issue",
             "something failed", "it failed", "can you investigate", "investigate this",
         }
         if not service_id and normalized_question in vague_requests:
-            return {
-                "answer": "I can investigate that. Which service is affected—Loan Service, Payments API, API Gateway, or Identity Service—and what symptom or failed job are you seeing?",
-                "sources": [],
-                "service_id": None,
-                "needs_clarification": True,
-                "agent_trace": [self._event("Requirement Understanding", "waiting", "Asked for the affected service and observed symptom.")],
-                "mode": self.status()["mode"],
-                "provider_fallback": None,
-                "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
-                "audit_id": str(uuid.uuid4()),
-            }
+            return clarification(
+                "I can investigate that. Which service is affected—Loan Service, Payments API, API Gateway, or Identity Service—and what symptom or failed job are you seeing?",
+                "Asked for the affected service and observed symptom.",
+            )
+        if service_id:
+            selected_service = self.repository.service(service_id)
+            service_only = normalized_question in {selected_service["id"], selected_service["name"].lower()}
+            vague_service_issue = normalized_question in {"it failed", "it is failing", "there is a problem", "it has an issue"}
+            if service_only:
+                return clarification(
+                    f"Got it—{selected_service['name']}. What are you trying to do, or what problem are you seeing?",
+                    "Confirmed the service and requested the user's goal or symptom.",
+                    service_id,
+                )
+            if vague_service_issue:
+                return clarification(
+                    f"I have {selected_service['name']} as the affected service. Is this a CI failure, production incident, release-risk question, or ownership request? If something failed, share the job name or error text.",
+                    "Confirmed the service and requested the issue type and observable evidence.",
+                    service_id,
+                )
         contextual_question = safe_question
         if safe_history:
             contextual_question = f"Conversation context: {' | '.join(safe_history)}\nCurrent request: {safe_question}"

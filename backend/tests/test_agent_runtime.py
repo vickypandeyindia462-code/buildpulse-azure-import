@@ -82,6 +82,28 @@ def test_vague_request_asks_for_requirement_details():
     assert result["sources"] == []
 
 
+def test_my_service_request_asks_for_service_before_retrieval():
+    result = runtime().chat("Can you help me with my service?", service_id="loan-service")
+    assert result["needs_clarification"] is True
+    assert result["answer"].startswith("Yes. Which service")
+    assert result["service_id"] is None
+    assert result["sources"] == []
+
+
+def test_service_name_only_asks_for_goal_or_symptom():
+    result = runtime().chat("Payments API")
+    assert result["needs_clarification"] is True
+    assert "What are you trying to do" in result["answer"]
+    assert result["service_id"] == "payments-api"
+    assert result["sources"] == []
+
+
+def test_service_context_explanation_does_not_claim_automatic_knowledge():
+    result = runtime().chat("How do you know what service I am using?")
+    assert "don’t know your service automatically" in result["answer"]
+    assert result["sources"] == []
+
+
 def test_follow_up_resolves_service_from_conversation_history():
     result = runtime().chat(
         "Who is the backup owner?",
