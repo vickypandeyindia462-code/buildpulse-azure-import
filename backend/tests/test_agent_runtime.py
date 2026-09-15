@@ -27,6 +27,21 @@ def test_mock_chat_returns_sources():
     result = runtime().chat("Why did the Loan Service CI build fail?")
     assert result["mode"] == "demo"
     assert result["sources"]
+    assert "BuildPulse mock analysis" not in result["answer"]
+    assert "[Source " in result["answer"]
+
+
+def test_greeting_is_natural_and_does_not_trigger_retrieval():
+    result = runtime().chat("Hello")
+    assert result["answer"].startswith("Hello!")
+    assert "BuildPulse mock analysis" not in result["answer"]
+    assert result["sources"] == []
+
+
+def test_service_owner_answer_is_grounded_in_catalog():
+    result = runtime().chat("Who owns the Payments API?")
+    assert "Dev Shah" in result["answer"]
+    assert result["sources"][0]["title"] == "Service catalog — Payments API"
 
 
 def test_chat_redacts_sensitive_input_before_provider_use():

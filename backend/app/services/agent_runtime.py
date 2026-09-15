@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import re
 import uuid
 
 import requests
@@ -72,17 +73,28 @@ class AgentSettings:
 
 
 class MockLLMProvider:
-    """A transparent deterministic fallback; it never invents cloud access."""
+    """A deterministic, evidence-only fallback for offline demonstrations."""
 
     name = "mock"
 
     def complete(self, *, question: str, evidence: list[dict[str, str]]) -> str:
-        source_names = ", ".join(item["title"] for item in evidence[:2]) or "the service catalog"
-        return (
-            f"BuildPulse mock analysis: {question.strip()}\n\n"
-            f"I used {source_names}. The suggested next step is to validate the affected "
-            "service in CI, involve its listed owner, and follow the linked runbook before release."
-        )
+        query_terms = {
+            term for term in re.findall(r"[a-z0-9_-]{3,}", question.lower())
+            if term not in {"about", "could", "please", "should", "what", "when", "where", "which", "with", "would"}
+        }
+        statements: list[str] = []
+        for index, item in enumerate(evidence[:3], start=1):
+            sentences = re.split(r"(?<=[.!?])\s+|\n+", item.get("content", ""))
+            ranked = sorted(
+                (sentence.strip() for sentence in sentences if 25 <= len(sentence.strip()) <= 320),
+                key=lambda sentence: len(query_terms & set(re.findall(r"[a-z0-9_-]{3,}", sentence.lower()))),
+                reverse=True,
+            )
+            if ranked:
+                statements.append(f"{ranked[0]} [Source {index}]")
+        if not statements:
+            return "I found related BuildPulse sources, but they do not contain a clear passage that answers the question."
+        return "Here’s what the connected BuildPulse knowledge says:\n\n" + "\n\n".join(statements)
 
 
 class AzureOpenAIProvider:
@@ -166,6 +178,11 @@ class BuildPulseAgentRuntime:
             "started_at": "2026-09-14T09:16:00Z",
         }
     ]
+
+    SOCIAL_MESSAGES = {
+        "hello", "hello!", "hi", "hi!", "hey", "hey!", "good morning",
+        "good afternoon", "good evening", "thanks", "thank you",
+    }
 
     def __init__(self, repository: RepositoryIntelligence | None = None, settings: AgentSettings | None = None) -> None:
         self.repository = repository or RepositoryIntelligence()
@@ -300,12 +317,41 @@ class BuildPulseAgentRuntime:
         security = scan_and_redact(question)
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
+        normalized_question = re.sub(r"\s+", " ", question_lower).strip()
+        if normalized_question in self.SOCIAL_MESSAGES:
+            return {
+                "answer": (
+                    "Hello! I’m the BuildPulse Copilot. I can help you investigate CI failures, "
+                    "release risk, service ownership, incidents, and resolutions using only your "
+                    "connected repository, Jira, Confluence, and BuildPulse knowledge sources. "
+                    "What would you like to investigate?"
+                ),
+                "sources": [],
+                "service_id": service_id,
+                "agent_trace": [self._event("Copilot Response", "complete", "Handled conversational greeting without knowledge claims.")],
+                "mode": self.status()["mode"],
+                "security": {"findings_count": len(security["findings"]), "redacted": bool(security["findings"])},
+                "audit_id": str(uuid.uuid4()),
+            }
         if not service_id:
             for service in self.repository.services():
                 if service["id"] in question_lower or service["name"].lower() in question_lower:
                     service_id = service["id"]
                     break
         documents = self._documents(service_id, safe_question)
+        if service_id:
+            service = self.repository.service(service_id)
+            catalog_fact = {
+                "title": f"Service catalog — {service['name']}",
+                "content": (
+                    f"{service['name']} is a {service['tier']} service owned by {service['primary_owner']} "
+                    f"with {service['backup_owner']} as backup owner and {service['team']} as the responsible team. "
+                    f"Its health endpoint is {service['health']} and its API documentation is {service['api']}."
+                ),
+                "score": 100,
+                "source": "repository",
+            }
+            documents = [catalog_fact, *documents][:5]
         failure = None
         if any(word in question_lower for word in ("fail", "ci", "build", "loan", "release")):
             failures = self.failed_runs()
