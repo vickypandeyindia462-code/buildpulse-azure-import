@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,13 @@ class RepositoryIntelligence:
         )
         return [line for line in result.stdout.splitlines() if line]
 
+    def _git_diff_text(self, branch: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(self.repository_path), "diff", "--unified=0", f"main...{branch}"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout
+
     def _service_for_files(self, files: list[str]) -> dict[str, Any]:
         for service in self.services():
             if any(file.startswith(f"{service['path']}/") for file in files):
@@ -60,6 +68,7 @@ class RepositoryIntelligence:
 
     def assess_change(self, branch: str, *, pr_number: int | None = None, review_status: str = "pending", test_status: str = "passed") -> dict[str, Any]:
         files = self._git_diff_files(branch)
+        diff_text = self._git_diff_text(branch)
         service = self._service_for_files(files)
         changed = " ".join(files).lower()
         drivers: list[dict[str, Any]] = []
@@ -80,6 +89,15 @@ class RepositoryIntelligence:
             score += 15; drivers.append({"factor": "Required owner approval pending", "points": 15})
         if test_status != "passed":
             score += 10; drivers.append({"factor": "Tests missing or pending", "points": 10})
+        secret_patterns = {
+            "GitHub token": r"gh[pousr]_[A-Za-z0-9_]{20,}",
+            "API key": r"\bsk-[A-Za-z0-9_-]{20,}\b",
+            "Credential assignment": r"(?i)(?:password|secret|api[_-]?key)\s*[:=]\s*['\"][^'\"]{12,}['\"]",
+        }
+        secret_types = [name for name, pattern in secret_patterns.items() if re.search(pattern, diff_text)]
+        if secret_types:
+            score += 40
+            drivers.append({"factor": "Secret detected in changed content", "points": 40, "finding_types": secret_types})
         if files and all(file.endswith((".md", ".txt")) for file in files):
             score = max(0, score - 15); drivers.append({"factor": "Documentation-only change", "points": -15})
         checks = ["Obtain approval from the primary and backup service owners."]
@@ -89,12 +107,15 @@ class RepositoryIntelligence:
             checks.append("Confirm dependent services accept the contract change.")
         if service.get("depends_on"):
             checks.append("Validate the listed dependencies during staged rollout.")
+        if secret_types:
+            checks.insert(0, "Block merge, remove the credential from the branch history, and rotate it if it was ever real.")
         return {
             "pr_number": pr_number, "branch": branch, "service": service["name"], "service_id": service["id"],
             "changed_files": files, "risk_score": score, "risk_level": self._risk_level(score),
             "owners": {"primary": service["primary_owner"], "backup": service["backup_owner"], "team": service["team"], "review_status": review_status},
             "affected_dependencies": service.get("depends_on", []), "drivers": drivers, "test_status": test_status,
             "recommended_checks": checks, "source": "local-synthetic-repository",
+            "security": {"secret_detected": bool(secret_types), "finding_count": len(secret_types), "finding_types": secret_types, "redacted": True},
         }
 
     def pull_request_risk(self, pr_number: int) -> dict[str, Any]:

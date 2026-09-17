@@ -16,3 +16,15 @@ def test_loan_pr_risk_is_explainable():
     assert result["risk_level"] == "high"
     assert "payments-api" in result["affected_dependencies"]
     assert any(driver["points"] > 0 for driver in result["drivers"])
+
+
+def test_secret_in_pr_diff_blocks_merge(monkeypatch):
+    repository = RepositoryIntelligence()
+    monkeypatch.setattr(repository, "_git_diff_files", lambda branch: ["identity-service/src/demo_config.py"])
+    monkeypatch.setattr(repository, "_git_diff_text", lambda branch: '+API_KEY="sk-synthetic-buildpulse-demo-1234567890"')
+
+    result = repository.assess_change("feature/identity-synthetic-secret", pr_number=99)
+
+    assert result["security"]["secret_detected"] is True
+    assert result["risk_level"] == "high"
+    assert any(driver["factor"] == "Secret detected in changed content" for driver in result["drivers"])
