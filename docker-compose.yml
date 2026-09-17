@@ -22,7 +22,9 @@ services:
     env_file: .env
     environment:
       DEMO_SERVICES_REPO_PATH: /data/demo-services
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-buildpulse}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-buildpulse}
+      # Accept a managed PostgreSQL URL from the VM .env file.  Keep the
+      # containerized database as the local-development fallback.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-buildpulse}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-buildpulse}}
     depends_on:
       postgres:
         condition: service_healthy
