@@ -34,6 +34,21 @@ HISTORICAL_INCIDENTS = (
     ("BP-HIST-IDENTITY-2025", "Identity token boundary regression reached production", "identity-service", "High", "Symptoms: empty-subject and boundary-expired demo tokens were accepted. Root cause: prefix-only validation and an incorrect expiry comparison. Resolution: required a non-empty subject, used constant-time signature comparison, and rejected exp less than or equal to now. Verification: malformed, modified, empty-subject, and expiry-boundary tests passed. Preventive action: security contract checks in CI."),
 )
 
+SCRUM_STORIES = (
+    ("BP-STORY-LOAN-METRICS", "Expose Loan Service pool saturation metrics", "loan-service", "High", "completed"),
+    ("BP-STORY-LOAN-ROLLBACK", "Automate Loan Service rollback verification", "loan-service", "Medium", "in_progress"),
+    ("BP-STORY-LOAN-ALERT", "Add early-warning saturation alert", "loan-service", "High", "pending"),
+    ("BP-STORY-PAY-IDEMPOTENCY", "Strengthen Payments API idempotency contract", "payments-api", "Highest", "completed"),
+    ("BP-STORY-PAY-DASHBOARD", "Publish Payments API retry dashboard", "payments-api", "Medium", "in_progress"),
+    ("BP-STORY-PAY-LOAD", "Add payment retry load-test scenario", "payments-api", "High", "pending"),
+    ("BP-STORY-GATEWAY-TRACE", "Propagate correlation IDs across gateway routes", "api-gateway", "High", "completed"),
+    ("BP-STORY-GATEWAY-CONTRACT", "Validate downstream gateway contracts", "api-gateway", "Medium", "in_progress"),
+    ("BP-STORY-GATEWAY-SLO", "Add gateway route-level SLO reporting", "api-gateway", "Medium", "pending"),
+    ("BP-STORY-IDENTITY-TOKEN", "Reject empty-subject identity tokens", "identity-service", "Highest", "completed"),
+    ("BP-STORY-IDENTITY-EXPIRY", "Enforce token expiry boundary", "identity-service", "High", "pending"),
+    ("BP-STORY-IDENTITY-AUDIT", "Add identity validation audit events", "identity-service", "Medium", "pending"),
+)
+
 
 def _adf(text: str) -> dict[str, Any]:
     return {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]}
@@ -85,7 +100,7 @@ class JiraClient:
     def issues(self) -> list[dict[str, Any]]:
         response = self._request(
             "GET", "/rest/api/3/search/jql",
-            params={"jql": f'project = "{self.project_key}" AND labels = "buildpulse-demo" ORDER BY created DESC', "maxResults": 100, "fields": "summary,status,priority,issuetype,labels,created,updated,description,resolution,assignee"},
+            params={"jql": f'project = "{self.project_key}" AND labels in ("buildpulse-demo", "buildpulse-scrum") ORDER BY created DESC', "maxResults": 100, "fields": "summary,status,priority,issuetype,labels,created,updated,description,resolution,assignee"},
         ).json()
         items = []
         for issue in response.get("issues", []):
@@ -134,16 +149,75 @@ class JiraClient:
 
     def dashboard(self) -> dict[str, Any]:
         issues = self.issues()
+        seen_story_scenarios: set[str] = set()
+        unique_issues = []
+        for item in issues:
+            scenario = next((label for label in item["labels"] if label.startswith("scenario-bp-story-")), None)
+            if scenario and scenario in seen_story_scenarios:
+                continue
+            if scenario:
+                seen_story_scenarios.add(scenario)
+            unique_issues.append(item)
+        issues = unique_issues
         open_items = [item for item in issues if item["status_category"] != "done"]
         incidents = [item for item in open_items if "Incident" in (item["issue_type"] or "")]
         blockers = [item for item in open_items if item["priority"] in {"Highest", "High"}]
         counts = Counter(item["service_id"] for item in incidents if item["service_id"])
-        readiness = max(0, 100 - len([item for item in blockers if item["priority"] == "Highest"]) * 8 - len([item for item in blockers if item["priority"] == "High"]) * 3)
+        sprint_items = [item for item in issues if "buildpulse-scrum" in item["labels"]]
+        completed = [item for item in sprint_items if item["status_category"] == "done"]
+        in_progress = [item for item in sprint_items if item["status_category"] == "indeterminate"]
+        pending = [item for item in sprint_items if item["status_category"] == "new"]
+        completion = round(len(completed) / len(sprint_items) * 100) if sprint_items else 0
+        sprint_blockers = [item for item in pending + in_progress if item["priority"] == "Highest"]
+        readiness = max(0, completion - len(sprint_blockers) * 10) if sprint_items else max(0, 100 - len([item for item in blockers if item["priority"] == "Highest"]) * 8 - len([item for item in blockers if item["priority"] == "High"]) * 3)
         return {
             "source": "jira", "project_key": self.project_key, "issue_count": len(issues),
             "open_incidents": len(incidents), "release_blockers": len(blockers), "release_readiness": readiness,
             "attention": open_items[:6], "incidents_by_service": dict(counts), "issues": issues,
+            "sprint": {"name": "Release 24.3", "total": len(sprint_items), "completed": len(completed), "in_progress": len(in_progress), "pending": len(pending), "blocked": len(sprint_blockers), "completion_percent": completion},
+            "board_url": f"{self.base_url}/issues/?jql=project%20%3D%20{self.project_key}%20AND%20labels%20%3D%20buildpulse-scrum",
         }
+
+    def seed_scrum_stories(self) -> dict[str, Any]:
+        existing = {label for item in self.issues() for label in item["labels"] if label.startswith("scenario-bp-story-")}
+        created, skipped, issue_keys = [], [], []
+        for scenario, summary, service_id, priority, target_state in SCRUM_STORIES:
+            scenario_label = f"scenario-{scenario.lower()}"
+            existing_issue = next((item for item in self.issues() if scenario_label in item["labels"]), None)
+            if scenario_label in existing and existing_issue:
+                skipped.append(scenario)
+                issue_keys.append(existing_issue["key"])
+                continue
+            description = f"Release 24.3 Scrum story for {SERVICE_LABELS[service_id]}. Live delivery data is tracked from Jira workflow status."
+            payload = {"fields": {"project": {"key": self.project_key}, "summary": f"[BuildPulse Story] {summary}", "description": _adf(description), "issuetype": {"name": "Task"}, "priority": {"name": priority}, "labels": ["buildpulse-scrum", "release-24-3", service_id, scenario_label, "synthetic-data"]}}
+            key = self._request("POST", "/rest/api/3/issue", json=payload).json()["key"]
+            if target_state != "pending":
+                transitions = self._request("GET", f"/rest/api/3/issue/{key}/transitions").json().get("transitions", [])
+                category = "done" if target_state == "completed" else "indeterminate"
+                transition = next((item for item in transitions if item.get("to", {}).get("statusCategory", {}).get("key") == category), None)
+                if transition:
+                    self._request("POST", f"/rest/api/3/issue/{key}/transitions", json={"transition": {"id": transition["id"]}})
+            created.append(key)
+            issue_keys.append(key)
+        return {"created": created, "skipped": skipped, "issue_keys": issue_keys, "total": len(issue_keys), "source": "jira"}
+
+    def ensure_scrum_board(self, issue_keys: list[str]) -> dict[str, Any]:
+        board_name = "BuildPulse Release Scrum"
+        boards = self._request("GET", "/rest/agile/1.0/board", params={"projectKeyOrId": self.project_key}).json().get("values", [])
+        board = next((item for item in boards if item.get("name") == board_name), None)
+        if not board:
+            filters = self._request("GET", "/rest/api/3/filter/search", params={"filterName": board_name}).json().get("values", [])
+            jira_filter = next((item for item in filters if item.get("name") == board_name), None)
+            if not jira_filter:
+                jira_filter = self._request("POST", "/rest/api/3/filter", json={"name": board_name, "description": "BuildPulse Release 24.3 live Scrum delivery view", "jql": f'project = "{self.project_key}" AND labels = "buildpulse-scrum" ORDER BY created DESC', "favourite": True}).json()
+            board = self._request("POST", "/rest/agile/1.0/board", json={"name": board_name, "type": "scrum", "filterId": int(jira_filter["id"]), "location": {"type": "project", "projectKeyOrId": self.project_key}}).json()
+        sprints = self._request("GET", f"/rest/agile/1.0/board/{board['id']}/sprint").json().get("values", [])
+        sprint = next((item for item in sprints if item.get("name") == "Release 24.3"), None)
+        if not sprint:
+            sprint = self._request("POST", "/rest/agile/1.0/sprint", json={"name": "Release 24.3", "goal": "Deliver live service readiness with no unresolved release blockers", "originBoardId": board["id"]}).json()
+        if issue_keys:
+            self._request("POST", f"/rest/agile/1.0/sprint/{sprint['id']}/issue", json={"issues": issue_keys})
+        return {"board_id": board["id"], "board_name": board_name, "board_url": f"{self.base_url}/jira/software/c/projects/{self.project_key}/boards/{board['id']}", "sprint_id": sprint["id"], "sprint_name": sprint["name"], "source": "jira"}
 
     def seed_demo_tickets(self) -> dict[str, Any]:
         existing = {label for item in self.issues() for label in item["labels"] if label.startswith("scenario-")}
