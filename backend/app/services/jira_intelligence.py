@@ -32,6 +32,7 @@ HISTORICAL_INCIDENTS = (
     ("BP-HIST-LOAN-2025", "Loan Service production saturation after pool configuration change", "loan-service", "Highest", "Symptoms: dependency timeouts and 18% error rate after a connection-pool change. Root cause: runtime capacity diverged from the reviewed configuration and exceeded downstream limits. Resolution: restored one configuration source, capped concurrency, rolled back, then load-tested at 80%, 90%, and 100% pool utilization. Verification: p95 latency returned below 350 ms and dependency errors remained below 2%. Preventive action: configuration contract test and staged saturation monitoring."),
     ("BP-HIST-PAY-2025", "Payments duplicate reservations after timeout retry", "payments-api", "Highest", "Symptoms: multiple reservation identifiers for the same payment following client timeouts. Root cause: reservation creation occurred before the idempotency-ledger lookup. Resolution: moved the lookup before creation, returned the original response for identical payloads, rejected conflicting key reuse, and reconciled duplicates. Verification: repeated-request and conflicting-payload tests passed. Preventive action: bounded retries and an idempotency invariant alert."),
     ("BP-HIST-IDENTITY-2025", "Identity token boundary regression reached production", "identity-service", "High", "Symptoms: empty-subject and boundary-expired demo tokens were accepted. Root cause: prefix-only validation and an incorrect expiry comparison. Resolution: required a non-empty subject, used constant-time signature comparison, and rejected exp less than or equal to now. Verification: malformed, modified, empty-subject, and expiry-boundary tests passed. Preventive action: security contract checks in CI."),
+    ("BP-HIST-GATEWAY-2025", "API Gateway identity route disappeared from the registry", "api-gateway", "High", "Symptoms: identity requests returned a missing-route error and the gateway contract test raised KeyError for /identity. Root cause: the identity mapping was omitted during a route-table refactor. Resolution: restored /identity to identity-service, verified every existing route, and added a complete route-registry contract test. Verification: gateway routing and request-contract suites passed. Preventive action: consumer compatibility and registry completeness checks in CI."),
 )
 
 SCRUM_STORIES = (
@@ -177,6 +178,30 @@ class JiraClient:
             "sprint": {"name": "Release 24.3", "total": len(sprint_items), "completed": len(completed), "in_progress": len(in_progress), "pending": len(pending), "blocked": len(sprint_blockers), "completion_percent": completion},
             "board_url": f"{self.base_url}/issues/?jql=project%20%3D%20{self.project_key}%20AND%20labels%20%3D%20buildpulse-scrum",
         }
+
+    def assign_demo_work_to_current_user(self) -> dict[str, Any]:
+        """Assign one existing open synthetic task per service to the connected demo user."""
+        account = self._request("GET", "/rest/api/3/myself").json()
+        account_id = account.get("accountId")
+        if not account_id:
+            raise RuntimeError("Connected Jira account has no accountId")
+        assigned, skipped = [], []
+        open_tasks = [
+            issue for issue in self.issues()
+            if issue["status_category"] != "done" and issue["issue_type"] == "Task"
+        ]
+        for service_id in SERVICE_LABELS:
+            candidates = [issue for issue in open_tasks if issue["service_id"] == service_id]
+            existing = next((issue for issue in candidates if issue.get("assignee")), None)
+            if existing:
+                skipped.append(existing["key"])
+                continue
+            if not candidates:
+                continue
+            issue = sorted(candidates, key=lambda item: ({"Highest": 0, "High": 1, "Medium": 2, "Low": 3}.get(item["priority"], 4), item["created"] or ""))[0]
+            self._request("PUT", f"/rest/api/3/issue/{issue['key']}/assignee", json={"accountId": account_id})
+            assigned.append(issue["key"])
+        return {"assigned": assigned, "skipped": skipped, "assignee": account.get("displayName"), "source": "jira"}
 
     def seed_scrum_stories(self) -> dict[str, Any]:
         existing = {label for item in self.issues() for label in item["labels"] if label.startswith("scenario-bp-story-")}

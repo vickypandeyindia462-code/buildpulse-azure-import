@@ -73,7 +73,8 @@ class ConfluenceClient:
         storage = ((item.get("body") or {}).get("storage") or {}).get("value", "")
         webui = (item.get("_links") or {}).get("webui") or f"/wiki/pages/viewpage.action?pageId={item['id']}"
         webui = webui if webui.startswith("/wiki") else f"/wiki{webui}"
-        return {"id": str(item["id"]), "title": item.get("title", "Untitled"), "content": plain_text(storage), "url": f"{self.base_url}{webui}", "source": "confluence", "updated_at": (item.get("version") or {}).get("createdAt")}
+        version = item.get("version") or {}
+        return {"id": str(item["id"]), "title": item.get("title", "Untitled"), "content": plain_text(storage), "url": f"{self.base_url}{webui}", "source": "confluence", "updated_at": version.get("createdAt"), "author_id": version.get("authorId")}
 
     def status(self) -> dict[str, Any]:
         space = self._request("GET", f"/wiki/api/v2/spaces/{self.space_id}").json()

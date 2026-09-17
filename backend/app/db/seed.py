@@ -1,8 +1,16 @@
 from .database import engine
+from sqlalchemy import text
+
 from .models import Base, SMEOwnership
 
 def seed():
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(bind=engine)
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE documents ALTER COLUMN source TYPE TEXT"))
     # Insert sample SMEs if table empty
     from sqlalchemy.orm import Session
     db = Session(bind=engine)

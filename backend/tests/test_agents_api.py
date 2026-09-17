@@ -30,3 +30,21 @@ def test_copilot_accepts_recent_conversation_history():
     })
     assert response.status_code == 200
     assert response.json()["service_id"] == "payments-api"
+
+
+def test_copilot_uses_structured_ci_page_context_without_reasking_for_job():
+    response = client.post("/api/copilot/chat", json={
+        "question": "Explain this failed job and give me the safest verified remediation steps.",
+        "context": {
+            "type": "ci_failure",
+            "run_id": "demo-run-2431",
+            "service_id": "loan-service",
+            "job_name": "loan-service-tests",
+        },
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["needs_clarification"] is False
+    assert body["service_id"] == "loan-service"
+    assert body["sources"][0]["title"] == "CI analysis — loan-service-tests"

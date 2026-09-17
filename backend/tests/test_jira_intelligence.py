@@ -52,10 +52,10 @@ def test_ticket_seeding_is_idempotent_by_scenario_label():
     assert all("synthetic-data" in request["fields"]["labels"] for request in session.created)
 
 
-def test_historical_seeding_resolves_three_labelled_incidents():
+def test_historical_seeding_resolves_four_labelled_incidents():
     session = Session()
     result = JiraClient("https://example.atlassian.net", "SUP", "user@example.com", "token", session=session).seed_historical_incidents()
-    assert result["total"] == 3
+    assert result["total"] == 4
     issue_creates = [request for request in session.created if "fields" in request]
-    assert len(issue_creates) == 3
+    assert len(issue_creates) == 4
     assert all("historical-incident" in request["fields"]["labels"] for request in issue_creates)

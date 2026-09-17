@@ -15,6 +15,8 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1536"))
 
 def configured_provider() -> str:
     settings = Settings.from_env()
+    if settings.llm_provider == "gemini" and settings.gemini_api_key:
+        return "gemini"
     if settings.azure_openai_endpoint and settings.azure_openai_api_key and settings.azure_openai_embedding_deployment:
         return "azure_openai"
     if os.getenv("OPENAI_API_KEY", "").strip():
@@ -56,4 +58,15 @@ def get_embedding(text: str) -> List[float]:
             model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"), input=text
         )
         return response.data[0].embedding
+    if active_provider == "gemini":
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=settings.gemini_api_key)
+        response = client.models.embed_content(
+            model=os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=EMBEDDING_DIM),
+        )
+        return list(response.embeddings[0].values)
     return _mock_embedding(text)

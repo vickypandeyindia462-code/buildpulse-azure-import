@@ -20,6 +20,12 @@ class Settings:
     azure_openai_embedding_deployment: str
     gemini_api_key: str
     gemini_model: str
+    openai_api_key: str
+    openai_model: str
+    openai_base_url: str
+    anthropic_api_key: str
+    anthropic_model: str
+    anthropic_base_url: str
     jira_base_url: str
     jira_project_key: str
     jira_email: str
@@ -53,6 +59,12 @@ class Settings:
             azure_openai_embedding_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "").strip(),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip(),
+            openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini").strip(),
+            openai_base_url=os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", "").strip(),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5").strip(),
+            anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com").strip().rstrip("/"),
             jira_base_url=os.getenv("JIRA_BASE_URL", "").strip().rstrip("/"),
             jira_project_key=os.getenv("JIRA_PROJECT_KEY", "").strip(),
             jira_email=os.getenv("JIRA_EMAIL", "").strip(),

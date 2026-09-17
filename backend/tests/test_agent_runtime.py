@@ -147,9 +147,20 @@ def test_ci_analysis_uses_exact_selected_job_only():
         history=[{"role": "user", "content": "CI failure diagnosis for Loan Service"}],
     )
     assert result["needs_clarification"] is False
-    assert len(result["sources"]) == 1
+    assert len(result["sources"]) >= 1
     assert result["sources"][0]["title"] == "CI analysis — loan-service-tests"
+    assert any(source["title"].startswith("docs/") for source in result["sources"][1:])
     assert "safe value (30)" in result["answer"]
+
+
+def test_ci_cause_only_request_does_not_include_unrequested_fix():
+    result = runtime().chat(
+        "What is the cause of this failed CI job? Answer only with the cause.",
+        service_id="loan-service",
+        context={"type": "ci_failure", "run_id": "demo-run-2431", "service_id": "loan-service"},
+    )
+    assert "connection-pool capacity" in result["answer"]
+    assert "Recommended fix:" not in result["answer"]
 
 
 def test_follow_up_resolves_service_from_conversation_history():

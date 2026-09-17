@@ -128,6 +128,28 @@ class GitHubActionsClient:
                 })
         return failures
 
+    def failed_run(self, job_id: str) -> dict[str, Any] | None:
+        """Resolve one selected job directly so analysis does not depend on a changing list call."""
+        response = self._get(f"{self.base_url}/actions/jobs/{job_id}")
+        job = response.json()
+        if job.get("conclusion") != "failure":
+            return None
+        run = self._get(job["run_url"]).json() if job.get("run_url") else {}
+        failed_step = next(
+            (step.get("name") for step in job.get("steps", []) if step.get("conclusion") == "failure"),
+            "Inspect GitHub job log",
+        )
+        return {
+            "id": str(job["id"]), "run_id": str(run.get("id") or ""),
+            "workflow": run.get("name") or job.get("name", "GitHub Actions"),
+            "job": job.get("name", "GitHub Actions"), "service_id": service_for_job(job.get("name", "")),
+            "status": job.get("status"), "conclusion": "failure", "failed_step": failed_step,
+            "started_at": job.get("started_at") or run.get("run_started_at"),
+            "url": job.get("html_url") or run.get("html_url"), "branch": run.get("head_branch"),
+            "pr_number": (run.get("pull_requests") or [{}])[0].get("number"),
+            "source": "github", "log_available": bool(self.token),
+        }
+
     def sanitized_job_log(self, job_id: str) -> dict[str, Any]:
         if not self.token:
             return {"excerpt": "", "findings_count": 0, "redacted": False, "available": False}

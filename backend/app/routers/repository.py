@@ -1,10 +1,12 @@
 import subprocess
 import requests
+from collections import Counter
 
 from fastapi import APIRouter, HTTPException
 
 from ..services.repository_intelligence import RepositoryIntelligence
 from ..services.jira_intelligence import JiraClient
+from ..services.confluence_knowledge import ConfluenceClient
 from ..config import Settings
 
 
@@ -100,4 +102,26 @@ def get_portfolio_overview():
     try:
         return intelligence().portfolio_overview()
     except (FileNotFoundError, ValueError, subprocess.CalledProcessError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.get("/contributors/recognition")
+def contributor_recognition():
+    try:
+        result = intelligence().contributor_recognition()
+        settings = Settings.from_env()
+        confluence = ConfluenceClient(settings.confluence_base_url, settings.confluence_space_id, settings.confluence_space_key, settings.jira_email, settings.jira_api_token)
+        result["confluence_leader"] = None
+        if confluence.ready:
+            try:
+                pages = confluence.pages()
+                counts = Counter(page.get("author_id") for page in pages if page.get("author_id"))
+                if counts:
+                    author_id, page_count = counts.most_common(1)[0]
+                    account_name = settings.jira_email.split("@", 1)[0].replace(".", " ").replace("_", " ").title()
+                    result["confluence_leader"] = {"name": account_name or f"Account …{author_id[-6:]}", "pages": page_count, "source": "confluence"}
+            except requests.RequestException:
+                result["confluence_status"] = "unavailable"
+        return result
+    except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as error:
         raise HTTPException(status_code=503, detail=str(error)) from error

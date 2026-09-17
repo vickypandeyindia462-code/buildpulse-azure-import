@@ -36,5 +36,5 @@ class Document(Base):
             # If pgvector isn't available for some reason, store as text
             embedding = Column(Text, nullable=True)
 
-    source = Column(String, nullable=True)
+    source = Column(Text, nullable=True)
 

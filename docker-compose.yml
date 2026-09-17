@@ -1,28 +1,35 @@
-version: '3.8'
 services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: buildpulse
-      POSTGRES_PASSWORD: changeme
-      POSTGRES_DB: buildpulse
+      POSTGRES_USER: ${POSTGRES_USER:-buildpulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-buildpulse}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U buildpulse -d buildpulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   api:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    env_file: .env.example
+    env_file: .env
     environment:
       DEMO_SERVICES_REPO_PATH: /data/demo-services
-    depends_on: [postgres]
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-buildpulse}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-buildpulse}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - ../buildpulse-demo-services:/data/demo-services:ro
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
 
 volumes:
   pgdata:

@@ -9,6 +9,14 @@ def test_portfolio_overview_uses_synthetic_service_repository():
     assert any(change["service"] == "Loan Service" for change in overview["changes"])
 
 
+def test_contributor_recognition_is_calculated_from_git_history():
+    recognition = RepositoryIntelligence().contributor_recognition()
+    assert recognition["source"] == "git"
+    assert recognition["service_leaders"]
+    assert recognition["quality_leader"]["score"] >= 1
+    assert "test" in recognition["quality_formula"]
+
+
 def test_loan_pr_risk_is_explainable():
     result = RepositoryIntelligence().pull_request_risk(3)
 

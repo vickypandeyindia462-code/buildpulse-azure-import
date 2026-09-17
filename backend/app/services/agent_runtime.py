@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import json
 import re
 import uuid
 
@@ -18,6 +19,9 @@ from .repository_intelligence import RepositoryIntelligence
 from .ci_intelligence import GitHubActionsClient, classify_failure
 from .knowledge_base import KnowledgeBase
 from .confluence_knowledge import ConfluenceClient
+from .agent_tools import READ_ONLY_TOOLS, BuildPulseToolExecutor
+from .tool_calling_agent import AnthropicMessagesAgent, OpenAIResponsesAgent
+from .retrieval_store import RetrievalStore
 from ..config import Settings
 from backend.agents.security_check import scan_and_redact
 
@@ -36,6 +40,12 @@ class AgentSettings:
     azure_api_version: str = ""
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5-mini"
+    openai_base_url: str = ""
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5"
+    anthropic_base_url: str = "https://api.anthropic.com"
     confluence_base_url: str = ""
     confluence_space_id: str = ""
     confluence_space_key: str = ""
@@ -58,6 +68,12 @@ class AgentSettings:
             azure_api_version=settings.azure_openai_api_version,
             gemini_api_key=settings.gemini_api_key,
             gemini_model=settings.gemini_model,
+            openai_api_key=settings.openai_api_key,
+            openai_model=settings.openai_model,
+            openai_base_url=settings.openai_base_url,
+            anthropic_api_key=settings.anthropic_api_key,
+            anthropic_model=settings.anthropic_model,
+            anthropic_base_url=settings.anthropic_base_url,
             confluence_base_url=settings.confluence_base_url,
             confluence_space_id=settings.confluence_space_id,
             confluence_space_key=settings.confluence_space_key,
@@ -69,6 +85,10 @@ class AgentSettings:
     def live_ready(self) -> bool:
         if self.provider == "gemini":
             return bool(self.gemini_api_key and self.gemini_model)
+        if self.provider == "openai":
+            return bool(self.openai_api_key and self.openai_model)
+        if self.provider == "anthropic":
+            return bool(self.anthropic_api_key and self.anthropic_model)
         return bool(self.provider == "azure_openai" and self.azure_endpoint and self.azure_api_key and self.azure_chat_deployment)
 
 
@@ -78,6 +98,38 @@ class MockLLMProvider:
     name = "mock"
 
     def complete(self, *, question: str, evidence: list[dict[str, str]]) -> str:
+        question_lower = question.lower()
+        user_request = question_lower.split("response requirement:", 1)[0]
+        section_requests = (
+            (r"\b(tool|tools)\b", "New-joiner tools"),
+            (r"\b(entitlement|entitlements|access|permission)\b", "Entitlement requests"),
+            (r"\b(role|roles|responsibilit|owner)\b", "Roles and responsibilities"),
+            (r"\b(progress|roadmap|future plan)\b", "Current progress and future plan"),
+            (r"\b(history|historical|old issue|past issue)\b", "Historical issues"),
+            (r"\b(risk|risky)\b", "Risk profile"),
+            (r"\b(rule|rules|regulation|policy|compliance)\b", "Rules and regulations"),
+            (r"\b(architecture|design|component|data flow)\b", "Purpose and architecture"),
+        )
+        requested_headings = [heading for pattern, heading in section_requests if re.search(pattern, user_request)]
+        if requested_headings and evidence:
+            extracted = []
+            for heading in requested_headings:
+                for index, item in enumerate(evidence, start=1):
+                    match = re.search(rf"##\s+{re.escape(heading)}\s*(.*?)(?=\n##\s+|\Z)", item.get("content", ""), re.IGNORECASE | re.DOTALL)
+                    if match:
+                        body = match.group(1).strip()
+                        extracted.append(f"{heading}:\n{body} [Source {index}]")
+                        break
+            if extracted:
+                return "\n\n".join(extracted)
+        if evidence and ("failed ci job" in user_request or "selected ci job" in question_lower):
+            primary = evidence[0].get("content", "")
+            diagnosis = re.search(r"Diagnosis:\s*(.*?)(?:\s+Recommended fix:|$)", primary, re.IGNORECASE | re.DOTALL)
+            recommended_fix = re.search(r"Recommended fix:\s*(.*?)(?:\s*\[|$)", primary, re.IGNORECASE | re.DOTALL)
+            if diagnosis and ("cause" in user_request and "fix" not in user_request and "solution" not in user_request):
+                return diagnosis.group(1).strip(" ;.") + ". [Source 1]"
+            if diagnosis and recommended_fix:
+                return f"Cause: {diagnosis.group(1).strip(' ;.')}\n\nRecommended fix: {recommended_fix.group(1).strip(' ;.')} [Source 1]"
         query_terms = {
             term for term in re.findall(r"[a-z0-9_-]{3,}", question.lower())
             if term not in {"about", "could", "please", "should", "what", "when", "where", "which", "with", "would"}
@@ -94,6 +146,8 @@ class MockLLMProvider:
                 statements.append(f"{ranked[0]} [Source {index}]")
         if not statements:
             return "I found related BuildPulse sources, but they do not contain a clear passage that answers the question."
+        if "answer only" in question_lower or "only with" in question_lower:
+            return statements[0]
         return "Here’s what the connected BuildPulse knowledge says:\n\n" + "\n\n".join(statements)
 
 
@@ -122,7 +176,7 @@ class AzureOpenAIProvider:
             temperature=0.2,
             max_tokens=600,
             messages=[
-                {"role": "system", "content": "You are BuildPulse. Answer only from supplied evidence. State uncertainty and propose safe, reversible engineering actions."},
+                {"role": "system", "content": "You are BuildPulse. Answer only the user's exact question and only from supplied evidence. Do not summarize entire documents or add unrequested sections. State uncertainty when needed. Suggest actions only when the user asks for diagnosis, remediation, or next steps."},
                 {"role": "user", "content": f"Question: {question}\n\nEvidence:\n{context}"},
             ],
         )
@@ -156,15 +210,50 @@ class GeminiProvider:
                     "without citations or enterprise claims. For operational questions, answer only from the "
                     "retrieved knowledge-base evidence and cite claims using [Source N]. If the evidence is "
                     "insufficient, say exactly what is missing. Never invent services, owners, incidents, "
-                    "fixes, or risk values."
+                    "fixes, or risk values. Answer only the user's exact question. Do not reproduce or summarize "
+                    "a full document unless explicitly requested, and do not add unrequested background or sections."
                 ),
             ),
         )
         return (response.text or "The knowledge base does not contain enough evidence to answer this question.").strip()
 
+    def analyse_ci_failure(self, *, run: dict[str, Any], log: str, documents: list[dict[str, Any]]) -> dict[str, Any]:
+        from google import genai
+        from google.genai import types
+
+        knowledge = "\n\n".join(
+            f"[Document {index}: {item['title']}]\n{item.get('content', '')[:3500]}"
+            for index, item in enumerate(documents[:5], start=1)
+        )
+        prompt = f"""Investigate this one failed CI job.
+Job: {run.get('job') or run.get('workflow')}
+Service: {run.get('service_id')}
+Failed step: {run.get('failed_step')}
+
+Sanitized job log (prefer the final assertion/error over setup noise):
+{log[-9000:]}
+
+Retrieved engineering knowledge:
+{knowledge}
+
+Return JSON with exactly these keys: diagnosis, root_cause, recommended_fix, verification_steps, log_evidence, confidence_reason.
+diagnosis, root_cause, recommended_fix, and confidence_reason are concise strings. verification_steps is an array of 2-5 concrete strings. log_evidence is an array of 1-4 exact short excerpts from the supplied log. Never invent a command, file, or fact not supported by the evidence."""
+        response = genai.Client(api_key=self.settings.gemini_api_key).models.generate_content(
+            model=self.settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.05, response_mime_type="application/json"),
+        )
+        data = json.loads(response.text or "{}")
+        required = {"diagnosis", "root_cause", "recommended_fix", "verification_steps", "log_evidence", "confidence_reason"}
+        if not required.issubset(data) or not isinstance(data["verification_steps"], list) or not isinstance(data["log_evidence"], list):
+            raise ValueError("Gemini returned an incomplete CI analysis")
+        return data
+
 
 class BuildPulseAgentRuntime:
     """Coordinates CI, repository, retrieval, risk, SME, and response agents."""
+
+    _failed_run_cache: dict[str, dict[str, Any]] = {}
 
     fixture_runs = [
         {
@@ -214,16 +303,22 @@ class BuildPulseAgentRuntime:
             ("api_slo", r"\b(api|endpoint|slo|latency|availability|health)\b"),
             ("runbook", r"\b(runbook|recovery|resolution|fix|timeout)\b"),
             ("documentation", r"\b(document|documentation|guide|onboarding)\b"),
+            ("onboarding_access", r"\b(new joiner|new hire|tool|tools|entitlement|entitlements|access request|permissions?)\b"),
+            ("progress_roadmap", r"\b(current progress|progress|roadmap|future plan|next milestone|planned work)\b"),
+            ("governance", r"\b(rule|rules|regulation|regulations|policy|policies|compliance|guardrail)\b"),
+            ("architecture", r"\b(architecture|design|dependency|dependencies|data flow|component)\b"),
         )
         return next((name for name, pattern in patterns if re.search(pattern, text)), None)
 
     def __init__(self, repository: RepositoryIntelligence | None = None, settings: AgentSettings | None = None) -> None:
         self.repository = repository or RepositoryIntelligence()
         self.settings = settings or AgentSettings.from_env()
+        self._failed_run_cache: dict[str, dict[str, Any]] = {}
         self.ci = GitHubActionsClient(
             self.settings.github_owner, self.settings.github_repo, self.settings.github_token
         )
         self.knowledge = KnowledgeBase(self.repository.repository_path)
+        self.retrieval = RetrievalStore(self.knowledge)
         self.confluence = ConfluenceClient(self.settings.confluence_base_url, self.settings.confluence_space_id, self.settings.confluence_space_key, self.settings.atlassian_email, self.settings.atlassian_api_token)
 
     def _github_get(self, url: str, *, params: dict[str, Any] | None = None) -> requests.Response:
@@ -249,6 +344,8 @@ class BuildPulseAgentRuntime:
             and self.settings.gemini_api_key
             and self.settings.gemini_model
         )
+        openai_ready = bool(self.settings.provider == "openai" and self.settings.openai_api_key and self.settings.openai_model)
+        anthropic_ready = bool(self.settings.provider == "anthropic" and self.settings.anthropic_api_key and self.settings.anthropic_model)
         return {
             "mode": "live" if self.settings.live_ready else "demo",
             "llm_provider": self.settings.provider if self.settings.live_ready else "mock",
@@ -256,8 +353,12 @@ class BuildPulseAgentRuntime:
             "provider_ready": self.settings.live_ready,
             "azure_ready": azure_ready,
             "gemini_ready": gemini_ready,
+            "openai_ready": openai_ready,
+            "anthropic_ready": anthropic_ready,
             "github_access": "token" if self.settings.github_token else "public-read-only",
             "agents": ["CI Collector", "Failure Analysis", "Knowledge Retrieval", "Risk & SME", "Copilot Response"],
+            "available_tools": [tool.name for tool in READ_ONLY_TOOLS],
+            "cached_ci_failures": len(self._failed_run_cache),
         }
 
     def failed_runs(self) -> list[dict[str, Any]]:
@@ -268,6 +369,7 @@ class BuildPulseAgentRuntime:
                 # job to analyse. Retain the labelled fixture so the product demo can
                 # still demonstrate the failure-analysis path.
                 if failures:
+                    self._failed_run_cache.update({str(run["id"]): dict(run) for run in failures})
                     return failures
             except requests.RequestException:
                 # A good demo should still operate if Wi-Fi or GitHub is unavailable.
@@ -285,26 +387,96 @@ class BuildPulseAgentRuntime:
 
     def _documents(self, service_id: str | None = None, query: str = "") -> list[dict[str, str]]:
         search_query = query or f"{(service_id or '').replace('-', ' ')} architecture runbook recovery ownership dependencies"
-        documents = self.knowledge.search(search_query, service_id=service_id, limit=5)
+        retrieval_status = self.retrieval.status()
+        documents = (
+            self.retrieval.search(search_query, service_id=service_id, limit=12)
+            if retrieval_status["indexed_documents"]
+            else self.knowledge.search(search_query, service_id=service_id, limit=12)
+        )
         if self.confluence.ready:
             try:
                 documents.extend({"title": item["title"], "content": item["content"], "score": item["score"], "url": item["url"], "source": "confluence"} for item in self.confluence.search(search_query, limit=5))
             except requests.RequestException:
                 pass
-        return sorted(documents, key=lambda item: item.get("score") or 0, reverse=True)[:5]
+        ranked = sorted(documents, key=lambda item: item.get("score") or 0, reverse=True)
+        if service_id:
+            service_terms = {service_id.lower(), service_id.replace("-", " ").lower()}
+            other_service_terms = {
+                term
+                for service in self.repository.services() if service["id"] != service_id
+                for term in (service["id"].lower(), service["name"].lower())
+            }
+            ranked = [
+                item for item in ranked
+                if (
+                    (not str(item.get("source", "")).startswith("github-ci") or any(term in item.get("title", "").lower() for term in service_terms))
+                    and not any(term in item.get("title", "").lower() for term in other_service_terms)
+                )
+            ]
+        return ranked[:5]
 
     @staticmethod
     def _event(agent: str, state: str, summary: str) -> dict[str, str]:
         return {"agent": agent, "state": state, "summary": summary}
 
+    @staticmethod
+    def _deterministic_failure_analysis(service_id: str, log: str) -> dict[str, Any]:
+        lowered = log.lower()
+        patterns = [
+            ("identity-service", "token validator accepted a token without a subject", "The Identity Service accepts the prefix-only token `demo-` as valid.", "The validator checks the token prefix but does not require a non-empty subject after it.", "Require and validate a non-empty subject after `demo-`; preserve the existing valid-token behavior.", ["Rerun `python -m pytest tests -q`.", "Verify empty-subject, valid-subject, modified-token, and expiry-boundary cases."]),
+            ("payments-api", "payment contract accepted a zero-value reservation", "The Payments API authorises a reservation whose amount is zero.", "The payment contract does not reject non-positive reservation amounts before authorisation.", "Add a boundary check that rejects amounts less than or equal to zero before creating or authorising the reservation.", ["Rerun `python -m pytest tests -q`.", "Verify zero, negative, and valid positive reservation amounts."]),
+            ("api-gateway", "keyerror: '/identity'", "The API Gateway route registry does not contain the required `/identity` route.", "The `/identity` mapping is missing from `ROUTES`, causing the contract test to raise `KeyError`.", "Register `/identity` to `identity-service` in the route table without changing existing routes.", ["Rerun `python -m pytest tests -q`.", "Verify `/identity` resolves to `identity-service` and existing routes remain unchanged."]),
+            ("loan-service", "expected 30", "The Loan Service connection-pool capacity differs from the safe value asserted by its configuration contract.", "Runtime pool capacity has drifted from the reviewed value of 30.", "Restore the single configuration source to the documented safe value (30), then validate under staged saturation monitoring.", ["Rerun `python -m pytest tests -q`.", "Exercise pool utilization at 80%, 90%, and 100% before rollout."]),
+        ]
+        for expected_service, signature, diagnosis, root_cause, fix, checks in patterns:
+            if service_id == expected_service and signature in lowered:
+                evidence = next((line.strip() for line in log.splitlines() if signature in line.lower()), signature)
+                return {"diagnosis": diagnosis, "root_cause": root_cause, "recommended_fix": fix, "verification_steps": checks, "log_evidence": [evidence[-500:]], "confidence_reason": "The failing assertion directly identifies the violated behavior."}
+        failure_lines = [line.strip() for line in log.splitlines() if any(token in line.lower() for token in ("assertionerror", "keyerror", "failed ", "error:"))]
+        excerpt = failure_lines[-1][-500:] if failure_lines else "No precise assertion was extracted from the bounded log."
+        return {"diagnosis": f"The test step failed with: {excerpt}", "root_cause": "The exact code-level cause requires inspection of the failing assertion and the changed files.", "recommended_fix": "Correct the behavior identified by the failing assertion, then rerun only the affected test before the full suite.", "verification_steps": ["Rerun the failing test in isolation.", "Run the complete service test suite after the isolated test passes."], "log_evidence": [excerpt], "confidence_reason": "Based on the final error-bearing line in the sanitized job log."}
+
     def analyse_failure(self, run_id: str) -> dict[str, Any]:
-        run = next((item for item in self.failed_runs() if str(item["id"]) == str(run_id)), None)
+        run = self._failed_run_cache.get(str(run_id))
+        if not run:
+            run = next((item for item in self.failed_runs() if str(item["id"]) == str(run_id)), None)
+        if not run:
+            run = next((dict(item, source="fixture") for item in self.fixture_runs if str(item["id"]) == str(run_id)), None)
+        if not run and self.settings.ci_source == "github":
+            try:
+                run = self.ci.failed_run(str(run_id))
+            except requests.RequestException:
+                run = None
         if not run:
             raise KeyError(run_id)
         service_id = run.get("service_id") or "loan-service"
-        demo_pr_by_service = {"payments-api": 1, "api-gateway": 2, "loan-service": 3}
+        demo_pr_by_service = {"payments-api": 1, "api-gateway": 2, "loan-service": 3, "identity-service": 4}
         risk_pr = int(run.get("pr_number") or demo_pr_by_service.get(service_id, 3))
-        risk = self.repository.pull_request_risk(risk_pr)
+        try:
+            risk = self.repository.pull_request_risk(risk_pr)
+        except KeyError:
+            # Live GitHub PR numbers do not necessarily match the bounded
+            # synthetic repository scenarios. Preserve the real CI job while
+            # using the service-equivalent risk fixture and label the mapping.
+            mapped_pr = demo_pr_by_service.get(service_id, 3)
+            try:
+                risk = self.repository.pull_request_risk(mapped_pr)
+                risk["risk_mapping"] = "service-equivalent-demo"
+            except KeyError:
+                service = self.repository.service(service_id)
+                baseline = 45 if service.get("tier") == "critical" else 30
+                risk = {
+                    "pr_number": None, "service": service["name"], "service_id": service["id"],
+                    "changed_files": [], "risk_score": baseline,
+                    "risk_level": "medium" if baseline >= 35 else "low",
+                    "owners": {"primary": service["primary_owner"], "backup": service["backup_owner"], "team": service["team"], "review_status": "unknown"},
+                    "affected_dependencies": service.get("depends_on", []),
+                    "drivers": [{"factor": "Live PR diff is not present in the local risk fixture", "points": 0}],
+                    "test_status": "failed", "recommended_checks": ["Inspect the live PR diff and obtain service-owner review before merge."],
+                    "source": "service-catalog-baseline", "security": {"secret_detected": False, "finding_count": 0, "finding_types": [], "redacted": True},
+                    "risk_mapping": "service-baseline",
+                }
+            risk["requested_pr_number"] = risk_pr
         log_security = {"findings_count": 0, "redacted": False, "available": bool(run.get("log_excerpt"))}
         log = run.get("log_excerpt", "")
         if run.get("source") == "github" and run.get("log_available"):
@@ -314,39 +486,56 @@ class BuildPulseAgentRuntime:
                 log_security = log_result
             except requests.RequestException:
                 log_security = {"findings_count": 0, "redacted": False, "available": False}
-        documents = self._documents(service_id, f"{run.get('failed_step', '')} {log}")
+        error_lines = [line.strip() for line in log.splitlines() if any(token in line.lower() for token in ("assertionerror", "keyerror", "failed ", "error:", "assert "))]
+        retrieval_query = f"{service_id.replace('-', ' ')} {run.get('failed_step', '')} {' '.join(error_lines[-8:])} runbook remediation"
+        documents = self._documents(service_id, retrieval_query)
         classification = classify_failure(log, run.get("failed_step", ""))
         capacity_issue = "capacity" in log.lower() or "expected 30" in log.lower()
-        diagnosis = (
-            "The configured connection-pool capacity exceeds the safe bound asserted by the service test. "
-            "This can amplify database saturation during a traffic spike."
-            if capacity_issue else "The workflow failed; inspect the failing assertion and validate the change against the linked runbook."
-        )
-        fix = (
-            "Set the pool capacity to the documented safe value (30), rerun the loan-service test suite, then stage the change with database saturation monitoring."
-            if capacity_issue else "Make the smallest reversible correction, rerun the failed job, and request service-owner review."
-        )
+        analysis = self._deterministic_failure_analysis(service_id, log)
+        provider_used = "deterministic-log-analysis"
+        provider_fallback = None
+        if self.settings.live_ready and self.settings.provider == "gemini":
+            try:
+                analysis = GeminiProvider(self.settings).analyse_ci_failure(run=run, log=log, documents=documents)
+                provider_used = "gemini"
+            except Exception as error:
+                provider_fallback = type(error).__name__
+        diagnosis = analysis["diagnosis"]
+        fix = analysis["recommended_fix"]
         return {
             "run": run,
             "diagnosis": diagnosis,
             "recommended_fix": fix,
+            "root_cause": analysis["root_cause"],
+            "verification_steps": analysis["verification_steps"],
+            "log_evidence": analysis["log_evidence"],
+            "confidence_reason": analysis["confidence_reason"],
+            "provider_used": provider_used,
+            "provider_fallback": provider_fallback,
             "failure_class": "configuration" if capacity_issue else classification["class"],
             "confidence": classification["confidence"],
             "risk": risk,
             "owners": risk["owners"],
             "evidence": [{"title": "CI job log", "content": log}, *documents],
+            "related_documents": [{"title": item["title"], "url": item.get("url"), "source": item.get("source", "repository"), "score": item.get("score"), "snippet": item.get("content", "")[:240]} for item in documents],
             "security": log_security,
             "audit_id": str(uuid.uuid4()),
             "agent_trace": [
                 self._event("CI Collector", "complete", f"Loaded failed job {run.get('job', run['workflow'])}."),
-                self._event("Failure Analysis", "complete", diagnosis),
+                self._event("Failure Analysis", "complete", f"{diagnosis} Provider: {provider_used}."),
                 self._event("Knowledge Retrieval", "complete", f"Retrieved {len(documents)} matching repository documents."),
                 self._event("Risk & SME", "complete", f"{risk['risk_level'].title()} risk ({risk['risk_score']}/100); primary owner is {risk['owners']['primary']}."),
             ],
             "mode": self.status()["mode"],
         }
 
-    def chat(self, question: str, service_id: str | None = None, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    def chat(
+        self,
+        question: str,
+        service_id: str | None = None,
+        history: list[dict[str, str]] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         security = scan_and_redact(question)
         safe_question = security["redacted_text"]
         question_lower = safe_question.lower()
@@ -408,7 +597,18 @@ class BuildPulseAgentRuntime:
                 ),
                 "needs_clarification": False,
             }
-        explicit_service_id = None
+        page_context = context or {}
+        selected_ci_run = None
+        if page_context.get("type") == "ci_failure" and page_context.get("run_id"):
+            selected_ci_run = next(
+                (run for run in self.failed_runs() if str(run.get("id")) == str(page_context["run_id"])),
+                None,
+            )
+            if not selected_ci_run:
+                selected_ci_run = next((dict(run, source="fixture") for run in self.fixture_runs if str(run.get("id")) == str(page_context["run_id"])), None)
+            if selected_ci_run:
+                service_id = selected_ci_run.get("service_id") or page_context.get("service_id")
+        explicit_service_id = service_id if selected_ci_run else None
         for service in self.repository.services():
             if service["id"] in question_lower or service["name"].lower() in question_lower:
                 service_id = service["id"]
@@ -425,7 +625,7 @@ class BuildPulseAgentRuntime:
                 "I can help with BuildPulse engineering services, but I don’t yet have a valid service or requirement. Are you asking about Loan Service, Payments API, API Gateway, or Identity Service—and do you need help with a CI failure, incident, release risk, documentation, or ownership?",
                 "Cleared stale context and requested an in-scope service and goal.",
             )
-        current_intent = self._intent(normalized_question)
+        current_intent = "ci_failure" if selected_ci_run else self._intent(normalized_question)
         if explicit_service_id:
             explicit_service = self.repository.service(explicit_service_id)
             if normalized_question in {explicit_service["id"], explicit_service["name"].lower()}:
@@ -441,6 +641,10 @@ class BuildPulseAgentRuntime:
             "runbook": "a recovery runbook",
             "documentation": "service documentation",
             "release_risk": "release or PR risk information",
+            "onboarding_access": "new-joiner tools and entitlement information",
+            "progress_roadmap": "current progress and roadmap information",
+            "governance": "service rules and regulatory guidance",
+            "architecture": "service architecture information",
         }
         if not service_id and safe_history:
             for previous_turn in reversed(safe_history):
@@ -503,14 +707,13 @@ class BuildPulseAgentRuntime:
                 "Requested a concrete operational intent before retrieval.",
                 service_id,
             )
-        service_scoped_intents = {"ownership", "ci_failure", "incident", "api_slo", "runbook", "documentation"}
-        selected_ci_run = None
+        service_scoped_intents = {"ownership", "ci_failure", "incident", "api_slo", "runbook", "documentation", "onboarding_access", "progress_roadmap", "governance", "architecture"}
         if intent in service_scoped_intents and not service_id:
             return clarification(
                 f"I understand that you need {intent_labels[intent]}. Which service is affected: Loan Service, Payments API, API Gateway, or Identity Service?",
                 f"Captured intent={intent}; waiting for the service before retrieval.",
             )
-        if intent == "ci_failure" and service_id:
+        if intent == "ci_failure" and service_id and not selected_ci_run:
             candidate_text = " ".join([normalized_question, *safe_user_history]).lower()
             matching_runs = [run for run in self.failed_runs() if run.get("service_id") == service_id]
             selected_ci_run = next(
@@ -530,6 +733,10 @@ class BuildPulseAgentRuntime:
         if safe_history:
             contextual_question = f"Conversation context: {' | '.join(safe_history)}\nCurrent request: {safe_question}"
         documents = self._documents(service_id, contextual_question)
+        if intent != "ci_failure":
+            documents = [item for item in documents if not str(item.get("source", "")).startswith("github-ci")]
+        if intent in {"onboarding_access", "progress_roadmap", "governance", "architecture"}:
+            documents.sort(key=lambda item: ("operating-handbook" not in item.get("title", "").lower(), "onboarding" not in item.get("title", "").lower(), -(item.get("score") or 0)))
         if service_id:
             service = self.repository.service(service_id)
             catalog_content = (
@@ -550,7 +757,8 @@ class BuildPulseAgentRuntime:
                 "score": 100,
                 "source": "repository",
             }
-            documents = [catalog_fact, *documents][:5]
+            if intent in {"ownership", "api_slo"}:
+                documents = [catalog_fact, *documents][:5]
             if ownership_request:
                 documents = [catalog_fact]
                 contextual_question = (
@@ -560,7 +768,7 @@ class BuildPulseAgentRuntime:
         failure = None
         if selected_ci_run:
             failure = self.analyse_failure(str(selected_ci_run["id"]))
-            documents = [{
+            analysis_document = {
                 "title": f"CI analysis — {selected_ci_run.get('job') or selected_ci_run.get('workflow')}",
                 "content": (
                     f"Failure class: {failure['failure_class']}; Diagnosis: {failure['diagnosis'].replace('.', ';').strip()} "
@@ -569,10 +777,16 @@ class BuildPulseAgentRuntime:
                 "source": selected_ci_run.get("source", "ci"),
                 "url": selected_ci_run.get("url"),
                 "score": 100,
-            }]
+            }
+            supporting_documents = [
+                item for item in failure.get("evidence", [])[1:5]
+                if item.get("title") and item.get("content")
+            ]
+            documents = [analysis_document, *supporting_documents]
             contextual_question = (
-                f"{contextual_question}\nResponse requirement: Diagnose only the selected CI job and give only "
-                "the supported cause and recommended fix. Do not discuss other services or failures."
+                f"{contextual_question}\nResponse requirement: Discuss only the selected CI job. Follow the "
+                "user's requested scope exactly; include a fix only if they asked for remediation or a solution. "
+                "Do not discuss other services or failures."
             )
         evidence = documents
         provider_error = None
@@ -595,6 +809,30 @@ class BuildPulseAgentRuntime:
                 provider_error = type(error).__name__
                 provider = MockLLMProvider()
                 answer = provider.complete(question=safe_question, evidence=evidence)
+        elif self.settings.live_ready and self.settings.provider in {"openai", "anthropic"}:
+            executor = BuildPulseToolExecutor(self)
+            provider = (
+                OpenAIResponsesAgent(
+                    self.settings.openai_api_key,
+                    self.settings.openai_model,
+                    self.settings.openai_base_url,
+                )
+                if self.settings.provider == "openai"
+                else AnthropicMessagesAgent(
+                    self.settings.anthropic_api_key,
+                    self.settings.anthropic_model,
+                    self.settings.anthropic_base_url,
+                )
+            )
+            agent_question = contextual_question
+            if selected_ci_run:
+                agent_question += f"\nThe selected CI run id is {selected_ci_run['id']}. Use get_ci_failure_analysis for that exact run."
+            try:
+                answer = provider.run(agent_question, executor.execute)
+            except Exception as error:
+                provider_error = type(error).__name__
+                provider = MockLLMProvider()
+                answer = provider.complete(question=contextual_question, evidence=evidence)
         else:
             provider = MockLLMProvider()
             answer = provider.complete(question=contextual_question, evidence=evidence)

@@ -25,6 +25,9 @@ class KnowledgeBase:
 
     def _paths(self) -> list[Path]:
         candidates = list((self.repository_path / "docs").rglob("*"))
+        supplemental_root = Path(__file__).resolve().parents[2] / "knowledge_seed" / "docs"
+        if supplemental_root.exists():
+            candidates.extend(supplemental_root.rglob("*"))
         candidates.extend(self.repository_path.glob("*/README.md"))
         root_readme = self.repository_path / "README.md"
         if root_readme.exists():
@@ -35,7 +38,10 @@ class KnowledgeBase:
         chunks = []
         for path in self._paths():
             content = path.read_text(encoding="utf-8", errors="replace")[:MAX_FILE_CHARS]
-            relative = path.relative_to(self.repository_path).as_posix()
+            try:
+                relative = path.relative_to(self.repository_path).as_posix()
+            except ValueError:
+                relative = f"managed-knowledge/{path.relative_to(Path(__file__).resolve().parents[2] / 'knowledge_seed' / 'docs').as_posix()}"
             start = 0
             index = 0
             while start < len(content):
@@ -47,6 +53,10 @@ class KnowledgeBase:
                 start += CHUNK_CHARS - CHUNK_OVERLAP
                 index += 1
         return chunks
+
+    def chunks(self) -> list[dict[str, Any]]:
+        """Return safe repository chunks for persistent indexing."""
+        return self._chunks()
 
     def search(self, query: str, service_id: str | None = None, limit: int = 5) -> list[dict[str, Any]]:
         query_tokens = _tokens(query)

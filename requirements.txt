@@ -2,7 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 pydantic
-psycopg-binary
+psycopg[binary]
 alembic
 streamlit
 llama-index

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -134,4 +135,50 @@ class RepositoryIntelligence:
             "changes_awaiting_approval": sum(change["owners"]["review_status"] != "approved" for change in changes),
             "services": [{"id": service["id"], "name": service["name"], "tier": service["tier"], "primary_owner": service["primary_owner"], "backup_owner": service["backup_owner"], "dependencies": service.get("depends_on", [])} for service in services],
             "changes": changes,
+        }
+
+    def contributor_recognition(self) -> dict[str, Any]:
+        """Calculate transparent contributor recognition from immutable Git history."""
+        result = subprocess.run(
+            ["git", "-C", str(self.repository_path), "log", "--all", "--format=@@%H|%an", "--name-only"],
+            check=True, capture_output=True, text=True, timeout=15,
+        )
+        commits: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if line.startswith("@@"):
+                sha, author = line[2:].split("|", 1)
+                current = {"sha": sha, "author": author, "files": []}
+                commits.append(current)
+            elif line and current is not None:
+                current["files"].append(line.replace("\\", "/"))
+
+        service_awards = []
+        for service in self.services():
+            prefix = f"{service['path'].rstrip('/')}/"
+            counts = Counter(commit["author"] for commit in commits if any(path.startswith(prefix) for path in commit["files"]))
+            if counts:
+                author, count = counts.most_common(1)[0]
+                service_awards.append({"service_id": service["id"], "service": service["name"], "name": author, "commits": count})
+
+        quality: dict[str, dict[str, set[str]]] = defaultdict(lambda: {"source": set(), "tests": set()})
+        for commit in commits:
+            code_files = [path for path in commit["files"] if path.endswith((".py", ".js", ".ts", ".java", ".go"))]
+            if any("/src/" in f"/{path}" for path in code_files):
+                quality[commit["author"]]["source"].add(commit["sha"])
+            if any("/test" in f"/{path}" or path.startswith("tests/") for path in code_files):
+                quality[commit["author"]]["tests"].add(commit["sha"])
+        ranked = sorted(({
+            "name": author,
+            "source_commits": len(signals["source"]),
+            "test_commits": len(signals["tests"]),
+            "score": len(signals["source"]) + 2 * len(signals["tests"]),
+        } for author, signals in quality.items()), key=lambda item: (item["score"], item["test_commits"], item["source_commits"]), reverse=True)
+        return {
+            "service_leaders": service_awards,
+            "quality_leader": ranked[0] if ranked else None,
+            "quality_formula": "1 point per source commit + 2 points per commit that changes tests",
+            "period": "All repository history",
+            "source": "git",
         }

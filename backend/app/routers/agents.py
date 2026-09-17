@@ -7,16 +7,21 @@ from ..services.agent_runtime import BuildPulseAgentRuntime
 
 
 router = APIRouter(prefix="/api", tags=["agents"])
+_runtime: BuildPulseAgentRuntime | None = None
 
 
 def runtime() -> BuildPulseAgentRuntime:
-    return BuildPulseAgentRuntime()
+    global _runtime
+    if _runtime is None:
+        _runtime = BuildPulseAgentRuntime()
+    return _runtime
 
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=2, max_length=4000)
     service_id: str | None = None
     history: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+    context: dict[str, Any] | None = None
 
 
 @router.get("/agents/status")
@@ -46,4 +51,4 @@ def analyse_ci_failure(run_id: str) -> dict[str, Any]:
 
 @router.post("/copilot/chat")
 def copilot_chat(payload: ChatRequest) -> dict[str, Any]:
-    return runtime().chat(payload.question, payload.service_id, payload.history)
+    return runtime().chat(payload.question, payload.service_id, payload.history, payload.context)
